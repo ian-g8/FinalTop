@@ -57,9 +57,9 @@ fem_params = {
     #  MAGNETIC PARAMETERS
     # ============================================================
     "mu0": 1.256e3,                 # magnetic permeability
-    "B_rem_mag": 40.0,              # remanent field magnitude
+    "B_rem_mag": 10.0,              # remanent field magnitude
     "B_rem_dir": (1.0, 0.0),        # direction of remanent field (x-direction)
-    "B_app_mag": 40.0,
+    "B_app_mag": 0.0,
     "B_app_dir": (0.0, 1.0),
 
 
@@ -69,7 +69,7 @@ fem_params = {
     "traction_bcs": [
         {
             "name": "out_right",                 # just a label
-            "traction_max": (0.0, 0.01),          
+            "traction_max": (0.0, 0.0),          
             "on_boundary": lambda x: np.isclose(x[0], 100.0),  # right edge of your 0..100 beam
         },
     ],
@@ -78,10 +78,10 @@ fem_params = {
         {
             "name": "traction_UP",
             "weight": 1.0,
-            "B_app_mag": 40.0,
-            "B_app_dir": (0.0, 1.0),
+            "B_app_mag": 0.0,   # DOES NOT EFFECT ANYTHING
+            "B_app_dir": (0.0, 0.0),
             "tractions": {
-                "out_right": (0.0, 0.0),
+                "out_right": (0.0, 0.0001),
             },
         },
     ],
@@ -103,7 +103,7 @@ fem_params = {
 # ============================================================
 
 opt = {
-    "max_iter": 200,
+    "max_iter": 600,
     "opt_tol": 1e-5,
 
     # Volume fraction for density
@@ -117,13 +117,20 @@ opt = {
     "solid_zone": lambda x: np.full(x.shape[1], False),
     "void_zone":  lambda x: np.full(x.shape[1], False),
 
+#    "solid_zone": lambda x: np.logical_and(
+#        (x[1] >= 9.5) & (x[1] <= 10.5),   # ~1.0 thickness around midline y=10
+#        (x[0] >= 0.0) & (x[0] <= 100.0)   # spans full length to guarantee connectivity
+#    ),
+#    "void_zone": lambda x: np.full(x.shape[1], False),
+
+
     # Penalty
     "penalty": 3.0,
     "epsilon": 1e-6,
 
     # FILTERING
     "filter_radius": 1.5,
-    "beta_interval": 50,
+    "beta_interval": 100,
     "beta_max": 32.0,
 
     # Optimizer
@@ -136,32 +143,41 @@ opt = {
     "sigma_max": 0.15,   
 
     # Strain-energy constraint
-    "strain_constraint": False,
+    "strain_constraint": True,
 
     # Base (fallback if ramping disabled)
-    "U_max": 0.2,
+    "U_max": 0.15,
 
     # Strain constraint ramping
     "strain_ramp": {
         "enabled": False,        # master toggle
-        "U_start": 0.2,         # initial U_max
-        "U_end": 0.295,           # final U_max (hard cap)
+        "U_start": 0.35,         # initial U_max
+        "U_end": 0.15,           # final U_max (hard cap)
         "start_iter": 1,        # iteration to start ramping
         "end_iter": 100,         # iteration to finish ramping
         "schedule": "linear",   # "linear" or "exp"
     },
+
+
+    # ------------------------------------------------------------
+    # OBJECTIVE REGULARIZATION (NOT A CONSTRAINT)
+    # ------------------------------------------------------------
 
     # Compliance constraint 
     "compliance_constraint": False,
     "compliance_ref": 0.7,  # start 0.255
     "compliance_gamma": 1.0,  
 
+    # Reference compliance for OBJECTIVE scaling ONLY
+    # Use iteration-1 compliance (~3.4e-03 from your logs)
+    "compliance_ref": 3.4e-03,
+
     # Objective
     "objective_type": "max_disp", # compliance, max_disp, disp_track
-    "enforce_volume_equality": False,
+    "enforce_volume_equality": True,
 
     # Output
-    "output_dir": "./test_phi_max/",
+    "output_dir": "./test_max_Tonly_S15_long/",
     "sim_output_interval": 25,
     "sim_image_output_interval": 25,
 }
@@ -172,16 +188,16 @@ opt = {
 
 design_variables = {
     "rho": {
-        "active": False,
-        "type": "density",   # placeholder, unused for now
+        "active": True,
+        "type": "density",  
     },
     "phi": {
         "active": True,
-        "type": "scalar",    # placeholder, unused for now
+        "type": "scalar",    
     },
     "theta": {
-        "active": False,
-        "type": "angle",     # placeholder, unused for now
+        "active": True,
+        "type": "angle",     
     },
 }
 

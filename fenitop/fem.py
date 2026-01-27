@@ -299,6 +299,36 @@ def form_fem(fem_params, opt):
         target_marker = 0
         J = - ufl.inner(u_field, ufl.as_vector((0.0, 1.0))) * ds(target_marker)
 
+    elif obj_type == "max_disp_plus_comp":
+        # --------------------------------------------------------
+        # Max displacement + compliance regularization
+        #
+        # J = -∫ u_y ds + alpha * (C / C_ref)
+        # --------------------------------------------------------
+
+        target_marker = 0
+
+        # Tip displacement term
+        J_tip = - ufl.inner(u_field, ufl.as_vector((0.0, 1.0))) * ds(target_marker)
+
+        # Compliance term
+        C_form = inner(u_field, b) * dx
+        for marker, t in enumerate(traction_constants):
+            C_form += inner(u_field, t) * ds(marker)
+
+        alpha = float(opt.get("disp_comp_alpha", 0.01))
+        
+        C_ref = float(opt.get("compliance_ref", 1.0))
+        if C_ref <= 0:
+            raise RuntimeError("compliance_ref must be > 0")
+
+        # Scale compliance term explicitly (Forms cannot be divided)
+        comp_weight = alpha / C_ref
+
+        J = J_tip + comp_weight * C_form
+
+
+
     elif obj_type == "max_disp_we_voidpen":
         # --------------------------------------------------------
         # Maximize vertical displacement on right boundary
