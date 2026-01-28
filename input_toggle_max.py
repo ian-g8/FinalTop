@@ -143,7 +143,7 @@ opt = {
     "sigma_max": 0.15,   
 
     # Strain-energy constraint
-    "strain_constraint": True,
+    "strain_constraint": False,
 
     # Base (fallback if ramping disabled)
     "U_max": 0.15,

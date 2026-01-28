@@ -72,10 +72,14 @@ def topopt(fem_params, opt, design_variables=None):
     femProblem, u_field, lambda_field, rho_field, rho_phys_field, phi_field, phi_phys_field, phi_eff_field, traction_constants, ds = form_fem(fem_params, opt)
     
     # --- Compliance diagnostic form ---
-    # C = ∫ t · u ds   (no body force in this problem)
-    compliance_form = 0
-    for marker, t in enumerate(traction_constants):
-        compliance_form += inner(u_field, t) * ds(marker)
+    # C = ∫ t · u ds   (only if tractions exist)
+    if len(traction_constants) > 0:
+        compliance_form = 0
+        for marker, t in enumerate(traction_constants):
+            compliance_form += inner(u_field, t) * ds(marker)
+    else:
+        compliance_form = None
+
 
 
     # --- Von Mises stress field for output ---
@@ -122,11 +126,13 @@ def topopt(fem_params, opt, design_variables=None):
         phi_eff_field * ufl.sin(opt["theta_phys_field"])
     ))
 
-
-    # --- Measure of displacement boundary (for tip displacement normalization) ---
     ds_measure = assemble_scalar(
-        form(Constant(fem_params["mesh_serial"], PETSc.ScalarType(1)) * ds(0))
+        form(Constant(fem_params["mesh"], PETSc.ScalarType(1)) * ds(0))
     )
+
+    # Expose for Sensitivity (disp constraint uses average tip displacement)
+    opt["tip_measure"] = float(ds_measure)
+
 
     # ============================================================
     # Design-variable–aware filters / projections
@@ -249,6 +255,9 @@ def topopt(fem_params, opt, design_variables=None):
 
     if opt.get("strain_constraint", False):
         num_consts += n_lc
+
+    if opt.get("disp_constraint", False):
+        num_consts += n_lc
        
     num_rho_elems = rho_field.x.petsc_vec.array.size
     num_phi_elems = phi_field.x.petsc_vec.array.size
@@ -329,11 +338,13 @@ def topopt(fem_params, opt, design_variables=None):
     # Apply rho passive zones
     centers_rho = rho_field.function_space.tabulate_dof_coordinates()[:num_rho_elems].T
     solid, void = opt["solid_zone"](centers_rho), opt["void_zone"](centers_rho)
+
     rho_ini = np.full(num_rho_elems, opt["vol_frac_rho"])
-    rho_ini[solid], rho_ini[void] = 0.995, 0.005
     rho_field.x.petsc_vec.array[:] = rho_ini
+
     rho_min = np.full(num_rho_elems, 0.05)  #CHANGE lower bound to 0.05 to avoid singular stiffness
     rho_max = np.ones(num_rho_elems)
+
 
     # Initialize phi field
     centers_phi = phi_field.function_space.tabulate_dof_coordinates()[:num_phi_elems].T
@@ -446,6 +457,39 @@ def topopt(fem_params, opt, design_variables=None):
             else:
                 opt["U_max_active"] = opt["U_max"]
 
+        # ============================================================
+        # Tip displacement constraint ramping
+        # ============================================================
+        if opt.get("disp_constraint", False):
+
+            ramp = opt.get("disp_ramp", {})
+            if ramp.get("enabled", False):
+
+                k0 = ramp.get("start_iter", 1)
+                k1 = ramp.get("end_iter", opt["max_iter"])
+                u0 = ramp.get("u_start", opt["u_min"])
+                u1 = ramp.get("u_end", opt["u_min"])
+
+                # Normalized ramp parameter
+                if opt_iter <= k0:
+                    theta = 0.0
+                elif opt_iter >= k1:
+                    theta = 1.0
+                else:
+                    theta = (opt_iter - k0) / max(k1 - k0, 1)
+
+                # Ramp schedule
+                if ramp.get("schedule", "linear") == "exp":
+                    u_min_active = u0 * (u1 / u0) ** theta
+                else:
+                    u_min_active = u0 + theta * (u1 - u0)
+
+                opt["u_min_active"] = float(u_min_active)
+
+            else:
+                opt["u_min_active"] = float(opt["u_min"])
+
+
         # Aggregated objective and sensitivities
         Obj_total = 0.0
         dJdrho_total = np.zeros_like(rho_field.x.petsc_vec.array)
@@ -462,6 +506,7 @@ def topopt(fem_params, opt, design_variables=None):
         stress_enabled = opt.get("stress_constraint", False)
         strain_enabled = opt.get("strain_constraint", False)
         comp_enabled = opt.get("compliance_constraint", False)
+        disp_enabled = opt.get("disp_constraint", False)
 
         g_stress_list = []   # one entry per load case (if enabled)
         g_strain_list = []   # one entry per load case (if enabled)
@@ -478,6 +523,11 @@ def topopt(fem_params, opt, design_variables=None):
         dUdphi_list = []
         dUdtheta_list = []
 
+        g_disp_list = []     # one per load case (if enabled)
+        u_tip_list = []      # optional diagnostics per load case
+        dDispdrho_list = []
+        dDispdphi_list = []
+        dDispdtheta_list = []
 
         # ============================================================
         # Density filtering / projection (active vars only)
@@ -511,6 +561,38 @@ def topopt(fem_params, opt, design_variables=None):
             # Deterministic load-case name 
             lc_name = load_case.get("name", "unnamed")
 
+            # ------------------------------------------------------------
+            # Update applied magnetic field (B_app) for this load case
+            # ------------------------------------------------------------
+            if "B_app" in opt:
+
+                # Load-case override, fallback to global fem_params
+                B_app_mag = float(
+                    load_case.get(
+                        "B_app_mag",
+                        fem_params.get("B_app_mag", 0.0)
+                    )
+                )
+
+                B_app_dir = np.array(
+                    load_case.get(
+                        "B_app_dir",
+                        fem_params.get("B_app_dir", (0.0, 0.0))
+                    ),
+                    dtype=float
+                )
+
+                nrm = np.linalg.norm(B_app_dir)
+                if nrm > 0:
+                    B_app_dir /= nrm
+                else:
+                    B_app_dir[:] = 0.0
+
+                # IMPORTANT: update Constant IN-PLACE
+                opt["B_app"].value[:] = B_app_mag * B_app_dir
+
+
+
             # Reset tractions for this case
             for t_const in traction_constants:
                 t_const.value = np.zeros_like(t_const.value)
@@ -532,12 +614,14 @@ def topopt(fem_params, opt, design_variables=None):
 
                 femProblem.solve_fem()
 
-            # --- Compliance diagnostic ---
-            C_local = assemble_scalar(form(compliance_form))
-            C_val = comm.allreduce(C_local, op=MPI.SUM)
+            # --- Compliance diagnostic (only if defined) ---
+            if compliance_form is not None:
+                C_local = assemble_scalar(form(compliance_form))
+                C_val = comm.allreduce(C_local, op=MPI.SUM)
 
-            if comm.rank == 0:
-                print(f"  [{lc_name}] compliance: {C_val:.6e}")
+                if comm.rank == 0:
+                    print(f"  [{lc_name}] compliance: {C_val:.6e}")
+
 
 
             # Post-solve diagnostics / fields
@@ -611,7 +695,8 @@ def topopt(fem_params, opt, design_variables=None):
             max_disp = np.max(np.abs(u_array))
          
             # Print Displacement info (per load case)
-            print(f"  [{lc_name}] max abs displacement: {max_disp:.4e}")
+            if comm.rank == 0:
+                print(f"  [{lc_name}] max abs displacement: {max_disp:.4e}")
 
             # Displacement tracking diagnostics 
             if opt.get("objective_type") == "disp_track" and comm.rank == 0:
@@ -747,6 +832,31 @@ def topopt(fem_params, opt, design_variables=None):
                 if theta_active:
                     dUdtheta_list.append(dUdtheta_design.copy())
 
+            # Tip displacement constraint (per case)
+            if disp_enabled:
+                if constraints.get("disp", None) is None:
+                    raise RuntimeError("disp_constraint enabled but constraints['disp'] is None")
+
+                g_disp_case = float(constraints["disp"]["g"])
+                dDispdrho_phys, dDispdphi_phys, dDispdtheta_phys = constraints["disp"]["dg"]
+
+                # Backprop to design space (safe with toggles)
+                dDispdrho_design = backprop_rho([dDispdrho_phys])[0]
+                dDispdphi_design = backprop_phi([dDispdphi_phys])[0]
+                if theta_active:
+                    dDispdtheta_design = backprop_theta([dDispdtheta_phys])[0]
+
+                # Store
+                g_disp_list.append(g_disp_case)
+                dDispdrho_list.append(dDispdrho_design.copy())
+                dDispdphi_list.append(dDispdphi_design.copy())
+                if theta_active:
+                    dDispdtheta_list.append(dDispdtheta_design.copy())
+
+                # Optional diagnostic scalar (average tip displacement)
+                if "u_tip" in constraints["disp"]:
+                    u_tip_list.append(float(constraints["disp"]["u_tip"]))
+
 
             # Load-case weight
             w_case = 1.0 if load_case is None else float(load_case.get("weight", 1.0))
@@ -770,6 +880,8 @@ def topopt(fem_params, opt, design_variables=None):
         Obj_value = Obj_total
         dJdrho = dJdrho_total
         dJdphi = dJdphi_total
+
+
 
         # ============================================================
         # Active-only MMA design vector / bounds / objective gradient
@@ -870,13 +982,28 @@ def topopt(fem_params, opt, design_variables=None):
                 )
             g_list.extend(g_strain_list)
 
+        # Tip displacement constraint (per load case)
+        if disp_enabled:
+            if len(g_disp_list) != len(load_cases):
+                raise RuntimeError(
+                    f"disp_enabled but g_disp_list has {len(g_disp_list)} entries, "
+                    f"expected {len(load_cases)}"
+                )
+            g_list.extend(g_disp_list)
+
         g_vec = np.array(g_list, dtype=float)
 
         # BUILD CONSTRAINT GRADIENT MATRIX dgdx
         # Each row corresponds to one g entry in g_vec.
+        #
+        # IMPORTANT:
+        # The row order MUST match the g_list construction order above.
         dgdx_rows = []
 
+        # ----------------------------
         # Upper volume bounds (global) — ACTIVE vars only
+        # g = V - V*
+        # ----------------------------
         if rho_active:
             row_parts = []
             if rho_active:
@@ -886,7 +1013,6 @@ def topopt(fem_params, opt, design_variables=None):
             if theta_active:
                 row_parts.append(np.zeros_like(opt["theta_field"].x.petsc_vec.array))
             dgdx_rows.append(np.concatenate(row_parts))
-
 
         if phi_active:
             row_parts = []
@@ -898,8 +1024,10 @@ def topopt(fem_params, opt, design_variables=None):
                 row_parts.append(np.zeros_like(opt["theta_field"].x.petsc_vec.array))
             dgdx_rows.append(np.concatenate(row_parts))
 
-
+        # ----------------------------
         # Lower volume bounds (global, equality) — ACTIVE vars only
+        # g = V* - V  =>  dg = -dV
+        # ----------------------------
         if opt.get("enforce_volume_equality", False):
             if rho_active:
                 row_parts = []
@@ -921,9 +1049,9 @@ def topopt(fem_params, opt, design_variables=None):
                     row_parts.append(np.zeros_like(opt["theta_field"].x.petsc_vec.array))
                 dgdx_rows.append(np.concatenate(row_parts))
 
-
-
+        # ----------------------------
         # Compliance gradient rows (per load case): dg/dx = (1/C_ref) dC/dx
+        # ----------------------------
         if comp_enabled:
             if (len(dCdrho_list) != len(load_cases) or
                 len(dCdphi_list) != len(load_cases) or
@@ -945,7 +1073,9 @@ def topopt(fem_params, opt, design_variables=None):
                     row_parts.append(dCdtheta_list[lc_i])
                 dgdx_rows.append(invC * np.concatenate(row_parts))
 
+        # ----------------------------
         # Stress gradients (per load case)
+        # ----------------------------
         if stress_enabled:
             if (len(dGdrho_list) != len(load_cases) or
                 len(dGdphi_list) != len(load_cases) or
@@ -962,9 +1092,9 @@ def topopt(fem_params, opt, design_variables=None):
                     row_parts.append(dGdtheta_list[lc_i])
                 dgdx_rows.append(np.concatenate(row_parts))
 
-
-
+        # ----------------------------
         # Strain gradients (per load case)
+        # ----------------------------
         if strain_enabled:
             if (len(dUdrho_list) != len(load_cases) or
                 len(dUdphi_list) != len(load_cases) or
@@ -981,7 +1111,28 @@ def topopt(fem_params, opt, design_variables=None):
                     row_parts.append(dUdtheta_list[lc_i])
                 dgdx_rows.append(np.concatenate(row_parts))
 
+        # ----------------------------
+        # Tip displacement gradients (per load case)
+        # (Must come last, because g_list appends g_disp at the end)
+        # ----------------------------
+        if disp_enabled:
+            if (len(dDispdrho_list) != len(load_cases) or
+                len(dDispdphi_list) != len(load_cases) or
+                (theta_active and len(dDispdtheta_list) != len(load_cases))):
+                raise RuntimeError("disp_enabled but displacement gradient lists are wrong length")
+
+            for lc_i in range(len(load_cases)):
+                row_parts = []
+                if rho_active:
+                    row_parts.append(dDispdrho_list[lc_i])
+                if phi_active:
+                    row_parts.append(dDispdphi_list[lc_i])
+                if theta_active:
+                    row_parts.append(dDispdtheta_list[lc_i])
+                dgdx_rows.append(np.concatenate(row_parts))
+
         dgdx = np.vstack(dgdx_rows)
+
 
         # --- MMA update ---
         x_new, change, low, upp = mma_optimizer(
@@ -998,7 +1149,7 @@ def topopt(fem_params, opt, design_variables=None):
 
         # --- Unpack active-only MMA vector back into fields ---
         if rho_active:
-            rho_field.x.petsc_vec.array[:] = x_new[rho_slice].copy()
+            rho_field.x.petsc_vec.array[:] = x_new[rho_slice].copy()   #BOUNDRY EDIT
 
         if phi_active:
             phi_field.x.petsc_vec.array[:] = x_new[phi_slice].copy()
@@ -1026,11 +1177,18 @@ def topopt(fem_params, opt, design_variables=None):
                 gamma = float(opt.get("compliance_gamma", 1.0))
                 for i, C_case in enumerate(g_comp_list):
                     print(f"      g_comp[{i}]: {C_case / C_ref - gamma:.3e}")
+            if disp_enabled:
+                for i, val in enumerate(g_disp_list):
+                    print(f"      g_disp[{i}]: {val:.3e}")
+                if len(u_tip_list) == len(g_disp_list):
+                    for i, ut in enumerate(u_tip_list):
+                        print(f"      u_tip[{i}]: {ut:.6f}  (avg over right boundary)")
 
-        # --- Print average tip displacement for max_disp objective ---
-        if opt["objective_type"] == "max_disp" and comm.rank == 0:
-            tip_disp = Obj_value / ds_measure
-            print(f"  tip displacement (avg over right boundary): {tip_disp:.6f}")
+        # --- Print average tip displacement (useful for tuning) ---
+        if opt.get("disp_constraint", False) and comm.rank == 0:
+            if len(u_tip_list) > 0:
+                # Use the last (only) load case value
+                print(f"  tip displacement (avg over right boundary): {u_tip_list[-1]:.6f}")
         
         values = S_comm.gather(phi_eff_field)
         if comm.rank == 0 and opt_iter % opt["sim_image_output_interval"] == 0:

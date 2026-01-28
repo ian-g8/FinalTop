@@ -272,8 +272,10 @@ class Sensitivity():
         constraints = {
             "stress": None,
             "strain": None,
-            "compliance": None
+            "compliance": None,
+            "disp": None
         }
+
 
         # ----------------------------
         # STRESS CONSTRAINT (p-norm VM)
@@ -394,6 +396,74 @@ class Sensitivity():
             constraints["strain"] = {
                 "g": g_strain,
                 "dg": (dUdrho_vec, dUdphi_vec, dUdtheta_vec)
+            }
+
+        # ----------------------------
+        # TIP DISPLACEMENT CONSTRAINT (up-only)
+        #
+        # Enforce: u_tip >= u_min
+        #
+        # Use the better-posed ratio form:
+        #   g = 1 - (u_tip / u_min) <= 0
+        #
+        # Notes:
+        # - u_tip is the AVERAGE vertical displacement over the tip boundary
+        # - The raw boundary integral form is stored in fem.py as opt["u_tip_form"]
+        # - The boundary measure |Γ_tip| is provided by topopt.py as opt["tip_measure"]
+        # - u_min is provided by topopt.py as opt["u_min_active"] (or base opt["u_min"])
+        # ----------------------------
+        if self.opt.get("disp_constraint", False):
+
+            # Assemble raw integral: ∫ u_y ds
+            u_tip_form = form(self.opt["u_tip_form"])
+            u_tip_int = self.comm.allreduce(assemble_scalar(u_tip_form), op=MPI.SUM)
+
+            # Boundary measure |Γ_tip| (must be set in topopt.py)
+            tip_measure = float(self.opt.get("tip_measure", 0.0))
+            if tip_measure <= 0.0:
+                raise RuntimeError("tip_measure must be set in topopt.py and be > 0 for disp_constraint")
+
+            # Average tip displacement (up is positive)
+            u_tip_value = u_tip_int / tip_measure
+
+            # Active target (ramping handled in topopt.py)
+            u_min = self.opt.get("u_min_active", self.opt.get("u_min", 1.0))
+            u_min = float(u_min)
+            if u_min <= 0.0:
+                raise RuntimeError("u_min (or u_min_active) must be > 0 for disp_constraint")
+
+            # Constraint: g = 1 - u_tip/u_min
+            g_disp = 1.0 - (u_tip_value / u_min)
+
+            # Total derivatives via adjoint:
+            # u_tip_value = (1/|Γ|) * ∫ u_y ds
+            dUtip_du_form     = form(self.opt["dUtip_du_form"])
+            dUtip_drho_form   = form(self.opt["dUtip_drho_form"])
+            dUtip_dphi_form   = form(self.opt["dUtip_dphi_form"])
+            dUtip_dtheta_form = form(self.opt["dUtip_dtheta_form"])
+
+            dUtipdrho_vec, dUtipdphi_vec, dUtipdtheta_vec = self._total_derivative_vectors(
+                dUtip_du_form,
+                dUtip_drho_form,
+                dUtip_dphi_form,
+                dUtip_dtheta_form
+            )
+
+            # u_tip_value = u_tip_int / tip_measure
+            # => d(u_tip_value)/dx = (1/tip_measure) * d(u_tip_int)/dx
+            dUtipdrho_vec.scale(1.0 / tip_measure)
+            dUtipdphi_vec.scale(1.0 / tip_measure)
+            dUtipdtheta_vec.scale(1.0 / tip_measure)
+
+            # g = 1 - u_tip_value/u_min  =>  dg/dx = -(1/u_min) * d(u_tip_value)/dx
+            dUtipdrho_vec.scale(-1.0 / u_min)
+            dUtipdphi_vec.scale(-1.0 / u_min)
+            dUtipdtheta_vec.scale(-1.0 / u_min)
+
+            constraints["disp"] = {
+                "g": g_disp,
+                "dg": (dUtipdrho_vec, dUtipdphi_vec, dUtipdtheta_vec),
+                "u_tip": u_tip_value
             }
 
 

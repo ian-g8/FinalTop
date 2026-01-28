@@ -192,13 +192,22 @@ def form_fem(fem_params, opt):
     opt["B_rem_field"] = B_rem_field
     opt["B_rem_expr"] = B_rem
 
-
     # --- Applied field (B_app) ---
-    B_app_mag = fem_params.get("B_app_mag", 5.0)
-    B_app_dir = np.array(fem_params.get("B_app_dir", (0.0, 1.0)), dtype=np.float64)
-    B_app_dir /= np.linalg.norm(B_app_dir)
+    B_app_mag = float(fem_params.get("B_app_mag", 0.0))
+    B_app_dir = np.array(fem_params.get("B_app_dir", (0.0, 0.0)), dtype=np.float64)
+
+    # Safe normalization: allow zero direction when mag == 0
+    nrm_app = np.linalg.norm(B_app_dir)
+    if nrm_app > 0:
+        B_app_dir /= nrm_app
+    else:
+        B_app_dir[:] = 0.0
+
     B_app = Constant(mesh, B_app_mag * B_app_dir)
- 
+
+    # Expose handle so topopt.py can update per load case
+    opt["B_app"] = B_app
+
     # Boundary conditions
     dim = mesh.topology.dim
     fdim = dim - 1
@@ -288,6 +297,19 @@ def form_fem(fem_params, opt):
         J = inner(u_field, b) * dx
         for marker, t in enumerate(traction_constants):
             J += inner(u_field, t) * ds(marker)
+        
+    elif obj_type == "min_elastic_energy":
+        # --------------------------------------------------------
+        # Minimize elastic strain energy
+        #
+        # Objective:
+        #   J = ∫ W_elastic dx
+        #
+        # Notes:
+        # - Raw (unnormalized) energy is used intentionally
+        # - Scaling / ramping is handled at the optimization level
+        # --------------------------------------------------------
+        J = W_elastic * dx
 
     elif obj_type == "max_disp":
         # --------------------------------------------------------
@@ -298,6 +320,22 @@ def form_fem(fem_params, opt):
         # --------------------------------------------------------
         target_marker = 0
         J = - ufl.inner(u_field, ufl.as_vector((0.0, 1.0))) * ds(target_marker)
+
+    elif obj_type == "max_disp_norm":
+        # --------------------------------------------------------
+        # Maximize displacement magnitude on right boundary (direction-free)
+        #
+        # Objective: J = -∫ ||u|| ds
+        # where ||u|| = sqrt(u_x^2 + u_y^2)
+        #
+        # Notes:
+        # - This avoids sign cancellation across load cases with opposing B_app
+        # - Uses the same boundary marker as max_disp (marker 0)
+        # --------------------------------------------------------
+        target_marker = 0
+        u_norm = ufl.sqrt(u_field[0]**2 + u_field[1]**2)
+        J = - u_norm * ds(target_marker)
+
 
     elif obj_type == "max_disp_plus_comp":
         # --------------------------------------------------------
@@ -456,6 +494,32 @@ def form_fem(fem_params, opt):
     opt["dObj_drho_form"] = ufl.derivative(J, rho_phys_field)
     opt["dObj_dphi_form"] = ufl.derivative(J, phi_phys_field)
     opt["dObj_dtheta_form"] = ufl.derivative(J, theta_phys_field)
+
+    # ============================================================
+    # TIP DISPLACEMENT (for displacement constraint)
+    # ============================================================
+
+    # Average vertical displacement over the target (tip) boundary
+    # Convention:
+    #   - Upward displacement is positive
+    #   - Same boundary marker as used for max_disp objective
+    target_marker = 0
+
+    # Raw (unnormalized) tip displacement form:
+    #   u_tip = ∫ u_y ds / |Γ|
+    #
+    # The boundary measure |Γ| is computed in topopt.py
+    u_tip_form = ufl.inner(u_field, ufl.as_vector((0.0, 1.0))) * ds(target_marker)
+
+    # Store scalar form
+    opt["u_tip_form"] = u_tip_form
+
+    # Partials for adjoint-based total derivatives
+    opt["dUtip_du_form"]     = ufl.derivative(u_tip_form, u_field)
+    opt["dUtip_drho_form"]   = ufl.derivative(u_tip_form, rho_phys_field)
+    opt["dUtip_dphi_form"]   = ufl.derivative(u_tip_form, phi_phys_field)
+    opt["dUtip_dtheta_form"] = ufl.derivative(u_tip_form, theta_phys_field)
+
 
     # ============================================================
     # COMPLIANCE CONSTRAINT FORMS (for normalized compliance constraint)
