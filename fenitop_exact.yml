@@ -1,0 +1,12 @@
+name: confenx
+channels:
+  - defaults
+dependencies:
+  - fenics-dolfinx
+  - matplotlib
+  - jupyter
+  - pip
+  - mpich
+  - scipy
+  - ipykernel
+prefix: /home/ian/miniconda3/envs/confenx
