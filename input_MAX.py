@@ -7,7 +7,7 @@ from fenitop.topopt import topopt
 #  MESH
 # ============================================================
 
-# Simple 2D cantilever: 100 × 20 rectangle
+# Simple 2D cantilever: 100 × 15 rectangle
 mesh = create_rectangle(
     MPI.COMM_WORLD,
     [[0.0, 0.0], [100.0, 15.0]],
@@ -42,7 +42,7 @@ fem_params = {
 
     # --- Shear modulus microstructure model ---
     # options: "default", "guth", "mooney", "kerner"
-    "G_model": "guth",
+    "G_model": "mooney",
 
     # --- Boundary conditions ---
     # Fix left edge (x=0)
@@ -57,7 +57,7 @@ fem_params = {
     #  MAGNETIC PARAMETERS
     # ============================================================
     "mu0": 1.256e3,                 # magnetic permeability
-    "B_rem_mag": 20.0,              # remanent field magnitude
+    "B_rem_mag": 40.0,            # remanent field magnitude
     "B_rem_dir": (1.0, 0.0),        # direction of remanent field (x-direction)
     "B_app_mag": 0.0,
     "B_app_dir": (0.0, 1.0),
@@ -77,27 +77,18 @@ fem_params = {
         },
     ],
 
-
-
     "load_cases": [
         {
-            "name": "B_up",
+            "name": "B_up_MooneyN2",
             "weight": 1.0,
-            "B_app_mag": 20.0,
+            "B_app_mag": 60.0,
             "B_app_dir": (0.0, 1.0),
-            "tractions": {},   # none
-        },
-        {
-            "name": "B_down",
-            "weight": 1.0,
-            "B_app_mag": 20.0,
-            "B_app_dir": (0.0, -1.0),
             "tractions": {},   # none
         },
     ],
 
     # Load stepping
-    "load_steps": 1,
+    "load_steps": 8,
 
     # PETSc solver
     "petsc_options": {
@@ -113,7 +104,7 @@ fem_params = {
 # ============================================================
 
 opt = {
-    "max_iter": 200,
+    "max_iter": 100,
     "opt_tol": 1e-5,
 
     # Volume fraction for density
@@ -138,7 +129,7 @@ opt = {
 
     # Optimizer
     "use_oc": False,
-    "move": 0.02,   # original 0.02
+    "move": 0.01,   # original 0.02
 
     # Stress constraint
     "stress_constraint": False,
@@ -180,7 +171,7 @@ opt = {
     "enforce_volume_equality": True,
 
     # Output
-    "output_dir": "./results_MAX_phitheta/",
+    "output_dir": "./results_MAX_MooneyN2/",
     "sim_output_interval": 20,
     "sim_image_output_interval": 20,
 }
@@ -199,7 +190,7 @@ design_variables = {
         "type": "scalar",    
     },
     "theta": {
-        "active": True,
+        "active": False,
         "type": "angle",     
     },
 }

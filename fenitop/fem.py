@@ -78,24 +78,40 @@ def form_fem(fem_params, opt):
             mode=PETSc.ScatterMode.FORWARD
         )
 
+    # ============================================================
+    # Theta initialization
+    #
+    # - If theta is inactive: use B_rem_dir (as before)
+    # - If theta is active: optionally initialize from theta_init_dir
+    #   (purely an initial guess, does NOT affect physics or output)
+    # ============================================================
 
-    # theta inactive → theta_phys = angle implied by B_rem_dir (CG1)
-    # (When theta is active, topopt will update theta_phys each iteration via filtering.)
-    if not dv_cfg.get("theta", {}).get("active", False):
-        # Default remanence direction from input file (unit vector)
+    theta_active = dv_cfg.get("theta", {}).get("active", False)
+
+    if not theta_active:
+        # theta inactive → fixed direction from B_rem_dir
         _B_dir = np.array(fem_params.get("B_rem_dir", (1.0, 0.0)), dtype=np.float64)
-        _n = np.linalg.norm(_B_dir)
-        if _n > 0:
-            _B_dir /= _n
-        theta0 = float(np.arctan2(_B_dir[1], _B_dir[0]))
-
-        with theta_phys_field.x.petsc_vec.localForm() as loc:
-            loc.set(theta0)
-        theta_phys_field.x.petsc_vec.ghostUpdate(
-            addv=PETSc.InsertMode.INSERT,
-            mode=PETSc.ScatterMode.FORWARD
+    else:
+        # theta active → optional initialization direction
+        _B_dir = np.array(
+            fem_params.get("theta_init_dir", (1.0, 0.0)),
+            dtype=np.float64
         )
 
+    _n = np.linalg.norm(_B_dir)
+    if _n > 0:
+        _B_dir /= _n
+
+    theta0 = float(np.arctan2(_B_dir[1], _B_dir[0]))
+
+    with theta_phys_field.x.petsc_vec.localForm() as loc:
+        loc.set(theta0)
+    theta_phys_field.x.petsc_vec.ghostUpdate(
+        addv=PETSc.InsertMode.INSERT,
+        mode=PETSc.ScatterMode.FORWARD
+    )
+
+ 
     # Material interpolation
     G0 = fem_params["shear_modulus"]
     nu = fem_params["poisson's ratio"]  # only needed for Kerner model
@@ -237,6 +253,75 @@ def form_fem(fem_params, opt):
     metadata = {"quadrature_degree": fem_params["quadrature_degree"]}
     dx = ufl.Measure("dx", metadata=metadata)
     ds = ufl.Measure("ds", domain=mesh, metadata=metadata, subdomain_data=facet_tags)
+ 
+    # ============================================================
+    # OBJECTIVE BOUNDARY MARKERS (decoupled from traction_bcs)
+    #
+    # If opt["objective_bcs"] is provided, we build a separate facet_tags_obj
+    # and a separate measure ds_obj so objectives can integrate on arbitrary
+    # boundaries without requiring "dummy traction_bcs".
+    #
+    # Each objective_bc dict should include:
+    #   - "name": str
+    #   - "on_boundary": callable(x)->bool
+    #
+    # Marker index is the list index in objective_bcs.
+    # ============================================================
+
+    objective_bcs = opt.get("objective_bcs", [])
+    if objective_bcs is None:
+        objective_bcs = []
+
+    if len(objective_bcs) > 0:
+
+        # If user provides "marker", use gmsh facet tags directly.
+        marker_based = any(("marker" in bc) for bc in objective_bcs)
+
+        if marker_based:
+            facet_tags_gmsh = fem_params.get("facet_tags", None)
+            if facet_tags_gmsh is None:
+                raise RuntimeError(
+                    "Marker-based objective_bcs requires fem_params['facet_tags'] "
+                    "(gmsh facet tags) to be provided."
+                )
+
+            ds_obj = ufl.Measure("ds", domain=mesh, metadata=metadata, subdomain_data=facet_tags_gmsh)
+
+            # Store for downstream use
+            opt["ds_obj"] = ds_obj
+            opt["facet_tags_obj"] = facet_tags_gmsh
+            opt["objective_marker_map"] = {bc["name"]: int(bc["marker"]) for bc in objective_bcs}
+
+        else:
+            # Predicate-based objective boundaries (legacy path)
+            obj_facets, obj_markers = [], []
+
+            for obj_marker, bc_dict in enumerate(objective_bcs):
+                obj_func = bc_dict["on_boundary"]
+                current_facets = locate_entities_boundary(mesh, fdim, obj_func)
+                obj_facets.extend(current_facets)
+                obj_markers.extend([obj_marker] * len(current_facets))
+
+            obj_facets = np.array(obj_facets, dtype=np.int32)
+            obj_markers = np.array(obj_markers, dtype=np.int32)
+
+            # Remove duplicates + keep consistent ordering
+            _, unique_indices = np.unique(obj_facets, return_index=True)
+            obj_facets, obj_markers = obj_facets[unique_indices], obj_markers[unique_indices]
+            sorted_indices = np.argsort(obj_facets)
+
+            facet_tags_obj = meshtags(mesh, fdim, obj_facets[sorted_indices], obj_markers[sorted_indices])
+            ds_obj = ufl.Measure("ds", domain=mesh, metadata=metadata, subdomain_data=facet_tags_obj)
+
+            opt["facet_tags_obj"] = facet_tags_obj
+            opt["ds_obj"] = ds_obj
+            opt["objective_marker_map"] = {bc["name"]: i for i, bc in enumerate(objective_bcs)}
+
+    else:
+        opt["ds_obj"] = None
+        opt["objective_marker_map"] = {}
+
+ 
     b = Constant(mesh, np.array(fem_params["body_force"], dtype=float))
 
     # Kinematics
@@ -335,6 +420,55 @@ def form_fem(fem_params, opt):
         target_marker = 0
         u_norm = ufl.sqrt(u_field[0]**2 + u_field[1]**2)
         J = - u_norm * ds(target_marker)
+
+
+    elif obj_type == "boundary_disp":
+        # --------------------------------------------------------
+        # Directional boundary displacement objective (actuator/gripper style)
+        #
+        # Requires:
+        #   opt["objective_bcs"] = [
+        #       {"name": str, "on_boundary": fn, "direction": (dx,dy), "weight": float(optional)},
+        #       ...
+        #   ]
+        #
+        # Objective:
+        #   J = - Σ_i weight_i ∫_{Γ_i} u · d_i ds
+        #
+        # Notes:
+        # - This is decoupled from traction_bcs via ds_obj.
+        # - If objective_bcs is missing/empty, we raise to avoid silent zero objectives.
+        # --------------------------------------------------------
+
+        ds_obj = opt.get("ds_obj", None)
+        objective_bcs = opt.get("objective_bcs", [])
+
+        if ds_obj is None or objective_bcs is None or len(objective_bcs) == 0:
+            raise RuntimeError(
+                "objective_type='boundary_disp' requires opt['objective_bcs'] (non-empty) "
+                "so fem.py can build ds_obj markers."
+            )
+
+        J = 0
+        for i, cfg in enumerate(objective_bcs):
+
+            # Direction (normalize safely)
+            d = np.array(cfg.get("direction", (0.0, 0.0)), dtype=float)
+            nrm = np.linalg.norm(d)
+            if nrm > 0:
+                d /= nrm
+            else:
+                raise RuntimeError(f"objective_bcs[{i}] has zero direction vector.")
+
+            w = float(cfg.get("weight", 1.0))
+
+            d_vec = ufl.as_vector((float(d[0]), float(d[1])))
+
+            # Accumulate directional boundary work-like term
+            marker = int(cfg.get("marker", i))
+            J += - w * ufl.inner(u_field, d_vec) * ds_obj(marker)
+
+
 
 
     elif obj_type == "max_disp_plus_comp":
@@ -606,4 +740,16 @@ def form_fem(fem_params, opt):
     
     phi_eff_field = Function(S, name="phi_eff")
 
-    return femProblem, u_field, lambda_field, rho_field, rho_phys_field, phi_field, phi_phys_field, phi_eff_field, traction_constants, ds
+    return (
+        femProblem,
+        u_field,
+        lambda_field,
+        rho_field,
+        rho_phys_field,
+        phi_field,
+        phi_phys_field,
+        phi_eff_field,
+        theta_phys_field,
+        traction_constants,
+        ds,
+    )

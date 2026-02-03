@@ -69,8 +69,20 @@ def topopt(fem_params, opt, design_variables=None):
     opt["active_design_vars"] = active_design_vars
 
     # Form FEM problem
-    femProblem, u_field, lambda_field, rho_field, rho_phys_field, phi_field, phi_phys_field, phi_eff_field, traction_constants, ds = form_fem(fem_params, opt)
-    
+    (
+        femProblem,
+        u_field,
+        lambda_field,
+        rho_field,
+        rho_phys_field,
+        phi_field,
+        phi_phys_field,
+        phi_eff_field,
+        theta_phys_field,
+        traction_constants,
+        ds,
+    ) = form_fem(fem_params, opt)
+   
     # --- Compliance diagnostic form ---
     # C = ∫ t · u ds   (only if tractions exist)
     if len(traction_constants) > 0:
@@ -562,35 +574,31 @@ def topopt(fem_params, opt, design_variables=None):
             lc_name = load_case.get("name", "unnamed")
 
             # ------------------------------------------------------------
-            # Update applied magnetic field (B_app) for this load case
+            # Initialize applied magnetic field for this load case (STEPPED)
             # ------------------------------------------------------------
-            if "B_app" in opt:
-
-                # Load-case override, fallback to global fem_params
-                B_app_mag = float(
-                    load_case.get(
-                        "B_app_mag",
-                        fem_params.get("B_app_mag", 0.0)
-                    )
+            B_app_mag_target = float(
+                load_case.get(
+                    "B_app_mag",
+                    fem_params.get("B_app_mag", 0.0)
                 )
+            )
 
-                B_app_dir = np.array(
-                    load_case.get(
-                        "B_app_dir",
-                        fem_params.get("B_app_dir", (0.0, 0.0))
-                    ),
-                    dtype=float
-                )
+            B_app_dir_target = np.array(
+                load_case.get(
+                    "B_app_dir",
+                    fem_params.get("B_app_dir", (0.0, 0.0))
+                ),
+                dtype=float
+            )
 
-                nrm = np.linalg.norm(B_app_dir)
-                if nrm > 0:
-                    B_app_dir /= nrm
-                else:
-                    B_app_dir[:] = 0.0
+            nrm = np.linalg.norm(B_app_dir_target)
+            if nrm > 0:
+                B_app_dir_target /= nrm
+            else:
+                B_app_dir_target[:] = 0.0
 
-                # IMPORTANT: update Constant IN-PLACE
-                opt["B_app"].value[:] = B_app_mag * B_app_dir
-
+            # Start from ZERO field (will ramp inside load steps)
+            opt["B_app"].value[:] = 0.0
 
 
             # Reset tractions for this case
@@ -606,13 +614,23 @@ def topopt(fem_params, opt, design_variables=None):
                     else:
                         bc_dict["traction_max"] = (0.0, 0.0)
 
-            # Incremental load stepping 
             for step in range(1, N_steps + 1):
+
+                # --------------------------------------------
+                # Ramp applied magnetic field
+                # --------------------------------------------
+                alpha = step / N_steps
+                opt["B_app"].value[:] = alpha * B_app_mag_target * B_app_dir_target
+
+                # --------------------------------------------
+                # Ramp tractions (unchanged behavior)
+                # --------------------------------------------
                 for t_const, bc_dict in zip(traction_constants, fem_params["traction_bcs"]):
                     t_max = np.array(bc_dict["traction_max"], dtype=float)
                     t_const.value += (1.0 / N_steps) * t_max
 
                 femProblem.solve_fem()
+
 
             # --- Compliance diagnostic (only if defined) ---
             if compliance_form is not None:
@@ -1226,7 +1244,32 @@ def topopt(fem_params, opt, design_variables=None):
         np.save(os.path.join(opt["output_dir"], "final_phi_eff.npy"), phi_array)
         rho_array = rho_phys_field.x.array
         np.save(os.path.join(opt["output_dir"], "final_rho_phys.npy"), rho_array)
+
+        # --- Save final phi_phys_field array ---
+        phi_phys_array = phi_phys_field.x.array
+        np.save(
+            os.path.join(opt["output_dir"], "final_phi_phys.npy"),
+            phi_phys_array
+        )
+
+        # --- Save final theta_phys_field array (if present) ---
+        theta_phys_field = opt.get("theta_phys_field", None)
+        if theta_phys_field is not None:
+            theta_phys_array = theta_phys_field.x.array
+            np.save(
+                os.path.join(opt["output_dir"], "final_theta_phys.npy"),
+                theta_phys_array
+            )
+
         print(f"Saved final phi_eff_field array to {opt['output_dir']}/final_phi_eff.npy")
+
+        print(f"Saved final fields to {opt['output_dir']}:")
+        print("  - final_rho_phys.npy")
+        print("  - final_phi_eff.npy")
+        print("  - final_phi_phys.npy")
+        if theta_phys_field is not None:
+            print("  - final_theta_phys.npy")
+
 
     # Close output files 
     sim_file_xdmf_results.close()
