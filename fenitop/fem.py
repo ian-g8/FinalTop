@@ -26,7 +26,10 @@ from fenitop.utility import WrapNonlinearProblem
 
 def form_fem(fem_params, opt):
     """Form an FEA problem."""
-    # Function spaces and functions
+
+    # ============================================================
+    # Function Spaces and State / Design Fields
+    # ============================================================
     mesh = fem_params["mesh"]
     element = basix.ufl.element("Lagrange", mesh.basix_cell(), 1, shape=(mesh.geometry.dim,))
     V = fem.functionspace(mesh, element)
@@ -50,17 +53,16 @@ def form_fem(fem_params, opt):
     theta_field = Function(S0, name="theta")
     theta_phys_field = Function(S, name="theta_phys")
 
-    # Expose handles for other modules (topopt/sensitivity) without changing return signature
+    # Expose theta fields for optimizer and sensitivity modules
     opt["theta_field"] = theta_field
     opt["theta_phys_field"] = theta_phys_field
 
     # ============================================================
-    # Freeze inactive design variables (initial state)
+    # Inactive Design Variable Handling
     # ============================================================
-
     dv_cfg = opt.get("design_variables", {})
 
-    # rho inactive → rho_phys = 1 (CG1)
+    # Apply rho inactive → rho_phys = 1 (CG1)
     if not dv_cfg.get("rho", {}).get("active", True):
         with rho_phys_field.x.petsc_vec.localForm() as loc:
             loc.set(1.0)
@@ -69,7 +71,7 @@ def form_fem(fem_params, opt):
             mode=PETSc.ScatterMode.FORWARD
         )
 
-    # phi inactive → phi_phys = 0 (CG1)
+    # Apply phi inactive → phi_phys = 0 (CG1)
     if not dv_cfg.get("phi", {}).get("active", True):
         with phi_phys_field.x.petsc_vec.localForm() as loc:
             loc.set(0.0)
@@ -79,20 +81,15 @@ def form_fem(fem_params, opt):
         )
 
     # ============================================================
-    # Theta initialization
-    #
-    # - If theta is inactive: use B_rem_dir (as before)
-    # - If theta is active: optionally initialize from theta_init_dir
-    #   (purely an initial guess, does NOT affect physics or output)
+    # Remanence Angle Initialization
     # ============================================================
-
     theta_active = dv_cfg.get("theta", {}).get("active", False)
 
     if not theta_active:
         # theta inactive → fixed direction from B_rem_dir
         _B_dir = np.array(fem_params.get("B_rem_dir", (1.0, 0.0)), dtype=np.float64)
     else:
-        # theta active → optional initialization direction
+        # Initial direction for theta (used as starting guess only)
         _B_dir = np.array(
             fem_params.get("theta_init_dir", (1.0, 0.0)),
             dtype=np.float64
@@ -110,9 +107,10 @@ def form_fem(fem_params, opt):
         addv=PETSc.InsertMode.INSERT,
         mode=PETSc.ScatterMode.FORWARD
     )
-
  
-    # Material interpolation
+    # ============================================================
+    # Material Interpolation
+    # ============================================================
     G0 = fem_params["shear_modulus"]
     nu = fem_params["poisson's ratio"]  # only needed for Kerner model
 
@@ -121,20 +119,15 @@ def form_fem(fem_params, opt):
     rho_penalty = eps + (1 - eps) * rho_phys_field**p
     G0 = G0 * rho_penalty
 
-    # ============================================================
-    # WE-weighted void-penalty infrastructure (frozen weights)
-    # ============================================================
-    # DG0 weight field w(x) used in penalty:  P = ∫ w(x) (1 - rho)^2 dx
-    # This will be populated/updated in topopt.py from strain-energy density.
+    # WE-weighted void penalty infrastructure
     w_void = Function(S0, name="w_void")
 
     # Normalization constant P0 (set once in topopt.py when weights are first frozen)
     P0_void = Constant(mesh, PETSc.ScalarType(1.0))
 
-    # Store handles so topopt.py can update them
+    # Expose void-penalty fields for optimizer control
     opt["we_voidpen_weight_field"] = w_void
-    opt["we_voidpen_P0_const"] = P0_void
-   
+    opt["we_voidpen_P0_const"] = P0_void   
 
     model = fem_params.get("G_model", "default")
 
@@ -158,10 +151,9 @@ def form_fem(fem_params, opt):
     mu_0_val = fem_params.get("mu0", 1.256e+3)  # mN/(kA)^2
     mu0 = Constant(mesh, PETSc.ScalarType(mu_0_val))
 
-    # --- Remanent magnetic field (B_rem) ---
-    # If theta is active, it overrides B_rem_dir and enters as:
-    #   B_rem = B_rem_mag * [cos(theta_phys), sin(theta_phys)]
-    # If theta is inactive, we use the prescribed B_rem_dir.
+    # ============================================================
+    # Magnetic Fields
+    # ============================================================
     B_rem_mag = float(fem_params.get("B_rem_mag", 50.0))
 
     element2 = basix.ufl.element("DG", mesh.basix_cell(), 0, shape=(mesh.geometry.dim,))
@@ -170,17 +162,12 @@ def form_fem(fem_params, opt):
 
     theta_active = dv_cfg.get("theta", {}).get("active", False)
 
+    # Remanent magnetic field
     if theta_active:
         # UFL expression (updates automatically when theta_phys_field changes)
         B_rem = B_rem_mag * ufl.as_vector((ufl.cos(theta_phys_field), ufl.sin(theta_phys_field)))
 
-        # NOTE:
-        # When theta is active, B_rem_expr (UFL) is used in physics.
-        # B_rem_field is for diagnostics / output only and will be
-        # updated in topopt.py for visualization.
-
         # Use current theta_phys_field value if present (it is already frozen when inactive; when active it starts at 0)
-        # We'll just set field = B_rem_mag * (1,0) initially for robustness.
         def _mag_flux_density_init(x):
             f = np.zeros((mesh.geometry.dim, x.shape[1]), dtype=np.float64)
             f[0, :] = B_rem_mag * 1.0
@@ -219,6 +206,7 @@ def form_fem(fem_params, opt):
     else:
         B_app_dir[:] = 0.0
 
+    # Applied magnetic field (updated per load case)
     B_app = Constant(mesh, B_app_mag * B_app_dir)
 
     # Expose handle so topopt.py can update per load case
@@ -253,21 +241,10 @@ def form_fem(fem_params, opt):
     metadata = {"quadrature_degree": fem_params["quadrature_degree"]}
     dx = ufl.Measure("dx", metadata=metadata)
     ds = ufl.Measure("ds", domain=mesh, metadata=metadata, subdomain_data=facet_tags)
- 
+    
     # ============================================================
-    # OBJECTIVE BOUNDARY MARKERS (decoupled from traction_bcs)
-    #
-    # If opt["objective_bcs"] is provided, we build a separate facet_tags_obj
-    # and a separate measure ds_obj so objectives can integrate on arbitrary
-    # boundaries without requiring "dummy traction_bcs".
-    #
-    # Each objective_bc dict should include:
-    #   - "name": str
-    #   - "on_boundary": callable(x)->bool
-    #
-    # Marker index is the list index in objective_bcs.
+    # Objective Boundary Markers
     # ============================================================
-
     objective_bcs = opt.get("objective_bcs", [])
     if objective_bcs is None:
         objective_bcs = []
@@ -324,7 +301,9 @@ def form_fem(fem_params, opt):
  
     b = Constant(mesh, np.array(fem_params["body_force"], dtype=float))
 
-    # Kinematics
+    # ============================================================
+    # Kinematics and Energy Densities
+    # ============================================================
     I = ufl.Identity(dim)          #Identity Matrix
     F = ufl.variable(ufl.Identity(dim) + ufl.grad(u_field)) # Deformation gradient
     C = F.T * F                    # Right Cauchy-Green tensor
@@ -344,7 +323,7 @@ def form_fem(fem_params, opt):
     # Magnetic energy density
     W_magnetic = -(1/mu0) * inner(F * B_rem, B_app)
 
-    # rho/phi coupling
+    # Effective magnetic fraction
     phi_eff = phi_phys_field * rho_phys_field
 
     # For post-processing: magnetization-like vector field
@@ -353,7 +332,7 @@ def form_fem(fem_params, opt):
 
     W_magnetic = phi_eff * W_magnetic
 
-    # Total energy
+    # Total energy density
     W = W_elastic + W_magnetic
 
     P = ufl.diff(W, F)             # First Piola-Kirchhoff stress tensor
@@ -384,62 +363,23 @@ def form_fem(fem_params, opt):
             J += inner(u_field, t) * ds(marker)
         
     elif obj_type == "min_elastic_energy":
-        # --------------------------------------------------------
         # Minimize elastic strain energy
-        #
-        # Objective:
-        #   J = ∫ W_elastic dx
-        #
-        # Notes:
-        # - Raw (unnormalized) energy is used intentionally
-        # - Scaling / ramping is handled at the optimization level
-        # --------------------------------------------------------
         J = W_elastic * dx
 
     elif obj_type == "max_disp":
-        # --------------------------------------------------------
-        # Maximize vertical displacement on right boundary
-        # This uses the same boundary marker as the traction load
-        # Marker index = 0 (first traction BC region)
-        # Objective: J = -∫ u_y ds  (negative: maximize disp)
-        # --------------------------------------------------------
+        # Maximize boundary displacement magnitude
         target_marker = 0
         J = - ufl.inner(u_field, ufl.as_vector((0.0, 1.0))) * ds(target_marker)
 
     elif obj_type == "max_disp_norm":
-        # --------------------------------------------------------
         # Maximize displacement magnitude on right boundary (direction-free)
-        #
-        # Objective: J = -∫ ||u|| ds
-        # where ||u|| = sqrt(u_x^2 + u_y^2)
-        #
-        # Notes:
-        # - This avoids sign cancellation across load cases with opposing B_app
-        # - Uses the same boundary marker as max_disp (marker 0)
-        # --------------------------------------------------------
         target_marker = 0
         u_norm = ufl.sqrt(u_field[0]**2 + u_field[1]**2)
         J = - u_norm * ds(target_marker)
 
 
     elif obj_type == "boundary_disp":
-        # --------------------------------------------------------
         # Directional boundary displacement objective (actuator/gripper style)
-        #
-        # Requires:
-        #   opt["objective_bcs"] = [
-        #       {"name": str, "on_boundary": fn, "direction": (dx,dy), "weight": float(optional)},
-        #       ...
-        #   ]
-        #
-        # Objective:
-        #   J = - Σ_i weight_i ∫_{Γ_i} u · d_i ds
-        #
-        # Notes:
-        # - This is decoupled from traction_bcs via ds_obj.
-        # - If objective_bcs is missing/empty, we raise to avoid silent zero objectives.
-        # --------------------------------------------------------
-
         ds_obj = opt.get("ds_obj", None)
         objective_bcs = opt.get("objective_bcs", [])
 
@@ -468,16 +408,8 @@ def form_fem(fem_params, opt):
             marker = int(cfg.get("marker", i))
             J += - w * ufl.inner(u_field, d_vec) * ds_obj(marker)
 
-
-
-
     elif obj_type == "max_disp_plus_comp":
-        # --------------------------------------------------------
         # Max displacement + compliance regularization
-        #
-        # J = -∫ u_y ds + alpha * (C / C_ref)
-        # --------------------------------------------------------
-
         target_marker = 0
 
         # Tip displacement term
@@ -499,20 +431,9 @@ def form_fem(fem_params, opt):
 
         J = J_tip + comp_weight * C_form
 
-
-
     elif obj_type == "max_disp_we_voidpen":
-        # --------------------------------------------------------
         # Maximize vertical displacement on right boundary
         # PLUS WE-weighted void penalty (frozen weights)
-        #
-        # J = (-∫ u_y ds) + alpha * (P / P0)
-        # P = ∫ w(x) (1 - rho_phys)^2 dx
-        #
-        # Notes:
-        # - w(x) is a DG0 Function updated in topopt.py from W_elastic
-        # - P0 is a Constant set once in topopt.py when w(x) is first frozen
-        # --------------------------------------------------------
         target_marker = 0
         J_tip = - ufl.inner(u_field, ufl.as_vector((0.0, 1.0))) * ds(target_marker)
 
@@ -629,20 +550,8 @@ def form_fem(fem_params, opt):
     opt["dObj_dphi_form"] = ufl.derivative(J, phi_phys_field)
     opt["dObj_dtheta_form"] = ufl.derivative(J, theta_phys_field)
 
-    # ============================================================
     # TIP DISPLACEMENT (for displacement constraint)
-    # ============================================================
-
-    # Average vertical displacement over the target (tip) boundary
-    # Convention:
-    #   - Upward displacement is positive
-    #   - Same boundary marker as used for max_disp objective
     target_marker = 0
-
-    # Raw (unnormalized) tip displacement form:
-    #   u_tip = ∫ u_y ds / |Γ|
-    #
-    # The boundary measure |Γ| is computed in topopt.py
     u_tip_form = ufl.inner(u_field, ufl.as_vector((0.0, 1.0))) * ds(target_marker)
 
     # Store scalar form
@@ -654,17 +563,7 @@ def form_fem(fem_params, opt):
     opt["dUtip_dphi_form"]   = ufl.derivative(u_tip_form, phi_phys_field)
     opt["dUtip_dtheta_form"] = ufl.derivative(u_tip_form, theta_phys_field)
 
-
-    # ============================================================
-    # COMPLIANCE CONSTRAINT FORMS (for normalized compliance constraint)
-    #
-    # Compliance (general): C = ∫ u·b dx + Σ ∫ u·t ds
-    # Notes:
-    # - In your current test cases, body_force is zero, so only traction terms contribute.
-    # - We store both the scalar form and partial derivatives so Sensitivity can compute
-    #   TOTAL derivatives via an adjoint solve (per load case).
-    # ============================================================
-
+    # Compliance constraint forms
     C_form = inner(u_field, b) * dx
     for marker, t in enumerate(traction_constants):
         C_form += inner(u_field, t) * ds(marker)
@@ -677,10 +576,7 @@ def form_fem(fem_params, opt):
     opt["dC_dphi_form"] = ufl.derivative(C_form, phi_phys_field)
     opt["dC_dtheta_form"] = ufl.derivative(C_form, theta_phys_field)
 
-    # ============================================================
-    # STRESS CONSTRAINT (Zhao 2022 p-norm von-Mises constraint)
-    # ============================================================
-
+    # Stress constraint (Zhao 2022 p-norm von-Mises constraint)
     # ---- material parameters ----
     pnorm = opt.get("stress_pnorm", 12)
     sigma_max = opt.get("sigma_max", 1e6)  # override in input script
@@ -717,10 +613,7 @@ def form_fem(fem_params, opt):
     # Store raw von-Mises expression for post-processing/output
     opt["sigma_vm_expr"] = sigma_vm
 
-    # ============================================================
-    # OPTIONAL STRAIN-ENERGY CONSTRAINT (pure mechanical energy)
-    # ============================================================
-
+    # Strain-energy constraint
     # Store the elastic strain-energy integrand for constraint use
     opt["strain_energy_form"] = W_elastic * dx
 

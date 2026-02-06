@@ -34,11 +34,10 @@ def topopt(fem_params, opt, design_variables=None):
     comm = MPI.COMM_WORLD
 
     # ============================================================
-    # DESIGN VARIABLE TOGGLES (intake + validation)
+    # Design Variable Configuration
     # ============================================================
 
     if design_variables is None:
-        # Backward-compatible default: rho + phi active
         design_variables = {
             "rho":   {"active": True},
             "phi":   {"active": True},
@@ -54,7 +53,7 @@ def topopt(fem_params, opt, design_variables=None):
         if not isinstance(cfg["active"], bool):
             raise TypeError(f"design_variables['{key}']['active'] must be bool")
 
-    # Ordered list of active design variables
+    # Active design variables (ordering defines MMA layout)
     active_design_vars = [
         name for name, cfg in design_variables.items() if cfg["active"]
     ]
@@ -64,11 +63,14 @@ def topopt(fem_params, opt, design_variables=None):
 
     if comm.rank == 0:
         print(f"[topopt] Active design variables: {active_design_vars}", flush=True)
-    # Store for downstream access (fem.py, sensitivity.py later)
+    
+    # Expose configuration for FEM, sensitivity, and optimizer
     opt["design_variables"] = design_variables
     opt["active_design_vars"] = active_design_vars
 
-    # Form FEM problem
+    # ============================================================
+    # FEM Problem Construction
+    # ============================================================
     (
         femProblem,
         u_field,
@@ -83,8 +85,8 @@ def topopt(fem_params, opt, design_variables=None):
         ds,
     ) = form_fem(fem_params, opt)
    
-    # --- Compliance diagnostic form ---
-    # C = ∫ t · u ds   (only if tractions exist)
+    # Compliance diagnostic (used for logging and optional constraints)
+    # NOTE: no body force added
     if len(traction_constants) > 0:
         compliance_form = 0
         for marker, t in enumerate(traction_constants):
@@ -102,7 +104,7 @@ def topopt(fem_params, opt, design_variables=None):
         S0_stress.element.interpolation_points()
     )
 
-    # --- Strain energy density field (needed for strain constraint OR WE-voidpen objective OR optional output) ---
+    # Strain energy density field (only created if required) (need for strain constraint)
     we_voidpen_obj = (opt.get("objective_type", "") == "max_disp_we_voidpen")
     if opt.get("strain_constraint", False) or opt.get("output_strain_energy_field", False) or we_voidpen_obj:
         S0_W = fem.functionspace(fem_params["mesh"], ("DG", 0))
@@ -117,9 +119,7 @@ def topopt(fem_params, opt, design_variables=None):
     S_stress_cg = fem.functionspace(fem_params["mesh"], ("CG", 1))
     sigma_vm_cg = fem.Function(S_stress_cg, name="sigma_vm_cg")
 
-    # --- Effective magnetization vector field for output ---
-    # m_eff = phi_eff * (cos(theta), sin(theta))
-    # Vector-valued CG1 space for effective magnetization output
+    # Effective magnetization field for visualization
     V_vec_cg = fem.functionspace(
         fem_params["mesh"],
         basix.ufl.element(
@@ -132,7 +132,7 @@ def topopt(fem_params, opt, design_variables=None):
   
     m_eff_field = fem.Function(V_vec_cg, name="m_eff")
 
-    # UFL expression for effective magnetization direction (phi-weighted)
+    # m_eff = phi_eff * [cos(theta), sin(theta)]
     m_eff_expr = ufl.as_vector((
         phi_eff_field * ufl.cos(opt["theta_phys_field"]),
         phi_eff_field * ufl.sin(opt["theta_phys_field"])
@@ -145,15 +145,13 @@ def topopt(fem_params, opt, design_variables=None):
     # Expose for Sensitivity (disp constraint uses average tip displacement)
     opt["tip_measure"] = float(ds_measure)
 
-
     # ============================================================
-    # Design-variable–aware filters / projections
+    # Density Filtering and Projection
     # ============================================================
-
     dv_cfg = opt.get("design_variables", {})
     active_vars = opt.get("active_design_vars", [])
 
-    # --- RHO ---
+    # Density variable (rho)
     if dv_cfg.get("rho", {}).get("active", True):
         rho_density_filter = DensityFilter(
             comm, rho_field, rho_phys_field,
@@ -172,7 +170,7 @@ def topopt(fem_params, opt, design_variables=None):
             mode=PETSc.ScatterMode.FORWARD
         )
 
-    # --- PHI ---
+    # Magnetic volume fraction (phi)
     if dv_cfg.get("phi", {}).get("active", True):
         phi_density_filter = DensityFilter(
             comm, phi_field, phi_phys_field,
@@ -189,7 +187,7 @@ def topopt(fem_params, opt, design_variables=None):
             mode=PETSc.ScatterMode.FORWARD
         )
 
-    # --- THETA ---
+    # Remanence direction angle (theta)
     if dv_cfg.get("theta", {}).get("active", False):
         opt["theta_density_filter"] = DensityFilter(
             comm,
@@ -303,11 +301,8 @@ def topopt(fem_params, opt, design_variables=None):
     dvec_old1, dvec_old2 = np.zeros(design_vec_size), np.zeros(design_vec_size)
     low, upp = None, None
 
-
     # ============================================================
-    # Backprop helpers (safe with inactive design variables)
-    # - If a variable is inactive, return zero design-gradients
-    # - This prevents calling .backward() on None filters/heaviside
+    # Sensitivity Backpropagation Helpers
     # ============================================================
 
     def _zeros_rho(n):
@@ -316,6 +311,7 @@ def topopt(fem_params, opt, design_variables=None):
     def _zeros_phi(n):
         return [np.zeros(num_phi_elems, dtype=float) for _ in range(n)]
 
+    # Map sensitivities from physical space to design space
     def backprop_rho(vecs_phys):
         """
         vecs_phys: list of PETSc Vecs w.r.t. rho_phys_field
@@ -347,7 +343,7 @@ def topopt(fem_params, opt, design_variables=None):
         # theta uses density filter only (no Heaviside)
         return opt["theta_density_filter"].backward(vecs_phys)
 
-    # Apply rho passive zones
+    # Initialize density field (rho)
     centers_rho = rho_field.function_space.tabulate_dof_coordinates()[:num_rho_elems].T
     solid, void = opt["solid_zone"](centers_rho), opt["void_zone"](centers_rho)
 
@@ -358,7 +354,7 @@ def topopt(fem_params, opt, design_variables=None):
     rho_max = np.ones(num_rho_elems)
 
 
-    # Initialize phi field
+    # Initialize magnetic fraction field (phi)
     centers_phi = phi_field.function_space.tabulate_dof_coordinates()[:num_phi_elems].T
     solid, void = opt["solid_zone"](centers_phi), opt["void_zone"](centers_phi)
 
@@ -376,9 +372,7 @@ def topopt(fem_params, opt, design_variables=None):
     # Clip to bounds and assign to PETSc vector
     phi_field.x.petsc_vec.array[:] = np.clip(phi_ini, phi_min, phi_max)
 
-    # ------------------------------------------------------------
-    # Initialize theta field (angle, radians)
-    # ------------------------------------------------------------
+    # Initialize remanence angle field (theta)
     if theta_active:
         theta_field = opt["theta_field"]
 
@@ -437,9 +431,7 @@ def topopt(fem_params, opt, design_variables=None):
         opt_start_time = time.perf_counter()
         opt_iter += 1
     
-        # ============================================================
         # Strain-energy constraint ramping
-        # ============================================================
         if opt.get("strain_constraint", False):
 
             ramp = opt.get("strain_ramp", {})
@@ -469,9 +461,7 @@ def topopt(fem_params, opt, design_variables=None):
             else:
                 opt["U_max_active"] = opt["U_max"]
 
-        # ============================================================
         # Tip displacement constraint ramping
-        # ============================================================
         if opt.get("disp_constraint", False):
 
             ramp = opt.get("disp_ramp", {})
@@ -541,10 +531,7 @@ def topopt(fem_params, opt, design_variables=None):
         dDispdphi_list = []
         dDispdtheta_list = []
 
-        # ============================================================
-        # Density filtering / projection (active vars only)
-        # ============================================================
-
+        # Apply filtering and projection
         if rho_density_filter is not None:
             rho_density_filter.forward()
             if opt_iter % opt["beta_interval"] == 0 and beta < opt["beta_max"]:
@@ -574,7 +561,7 @@ def topopt(fem_params, opt, design_variables=None):
             lc_name = load_case.get("name", "unnamed")
 
             # ------------------------------------------------------------
-            # Initialize applied magnetic field for this load case (STEPPED)
+            # Load Stepping
             # ------------------------------------------------------------
             B_app_mag_target = float(
                 load_case.get(
@@ -600,6 +587,14 @@ def topopt(fem_params, opt, design_variables=None):
             # Start from ZERO field (will ramp inside load steps)
             opt["B_app"].value[:] = 0.0
 
+            # RESET DISPLACEMENT FIELD (CRITICAL FOR PROPER LOAD STEPPING)
+            with u_field.x.petsc_vec.localForm() as loc:
+                loc.set(0.0)
+
+            u_field.x.petsc_vec.ghostUpdate(
+                addv=PETSc.InsertMode.INSERT,
+                mode=PETSc.ScatterMode.FORWARD
+            )
 
             # Reset tractions for this case
             for t_const in traction_constants:
@@ -1221,7 +1216,9 @@ def topopt(fem_params, opt, design_variables=None):
             if opt.get("strain_constraint", False) or opt.get("output_strain_energy_field", False):
                 sim_file_xdmf_results.write_function(W_field, opt_iter)
     
-    # final output
+    # ============================================================
+    # Final Output
+    # ============================================================
     if comm.rank == 0:
         plot_design(fem_params["mesh_serial"], values, None, opt["output_dir"], pv_or_image="image")
         print(f"FINAL max abs displacement: {max_disp:.4e}")
@@ -1238,7 +1235,7 @@ def topopt(fem_params, opt, design_variables=None):
         with open(os.path.join(opt["output_dir"], "final_results.txt"), "w") as f:
             f.write(final_report)
     
-    # --- Save final phi_phys_field array ---
+    # Save final design fields
     if comm.rank == 0:
         phi_array = phi_eff_field.x.array
         np.save(os.path.join(opt["output_dir"], "final_phi_eff.npy"), phi_array)

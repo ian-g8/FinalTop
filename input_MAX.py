@@ -4,7 +4,7 @@ from dolfinx.mesh import create_rectangle, CellType
 from fenitop.topopt import topopt
 
 # ============================================================
-#  MESH
+# Mesh
 # ============================================================
 
 # Simple 2D cantilever: 100 × 15 rectangle
@@ -25,52 +25,43 @@ if MPI.COMM_WORLD.rank == 0:
 else:
     mesh_serial = None
 
-
 # ============================================================
-#  FEM PARAMETERS
+# FEM Parameters
 # ============================================================
-
 fem_params = {
     "mesh": mesh,
     "mesh_serial": mesh_serial,
 
-    # --- Mechanical model ---
+    # Mechanical model
     "shear_modulus": 100.0,      # base shear modulus G0
     "poisson's ratio": 0.49,      # only used for Kerner model if selected
     "hyperelastic": True,
     "hyperModel": "neoHookean2",
 
-    # --- Shear modulus microstructure model ---
+    # Shear modulus microstructure model
     # options: "default", "guth", "mooney", "kerner"
     "G_model": "mooney",
 
-    # --- Boundary conditions ---
+    # Boundary conditions
     # Fix left edge (x=0)
     "disp_bc": lambda x: np.isclose(x[0], 0.0),
 
-    # --- Body force (none) ---
+    # External body force
     "body_force": (0.0, 0.0),
 
     "quadrature_degree": 2,
 
-    # ============================================================
-    #  MAGNETIC PARAMETERS
-    # ============================================================
+    # Magnetic parameters
     "mu0": 1.256e3,                 # magnetic permeability
-    "B_rem_mag": 40.0,            # remanent field magnitude
+    "B_rem_mag": 250.0,            # remanent field magnitude
     "B_rem_dir": (1.0, 0.0),        # direction of remanent field (x-direction)
     "B_app_mag": 0.0,
     "B_app_dir": (0.0, 1.0),
 
-
-    # ============================================================
-    #  TRACTION BOUNDARY CONDITIONS (mechanical load)
-    # ============================================================
-    # No mechanical tractions for pure magnetic actuation test
-    # Dummy traction BC ONLY to create ds(0) boundary marker for objectives/diagnostics
-    # Traction magnitude stays zero (pure magnetic actuation).
+    # Traction boundary conditions
     "traction_bcs": [
         {
+            # Right boundary (used for objectives and optional tractions)
             "name": "out_right",
             "traction_max": (0.0, 0.0),
             "on_boundary": lambda x: np.isclose(x[0], 100.0),
@@ -81,14 +72,14 @@ fem_params = {
         {
             "name": "B_up_MooneyN2",
             "weight": 1.0,
-            "B_app_mag": 60.0,
+            "B_app_mag": 500.0,
             "B_app_dir": (0.0, 1.0),
             "tractions": {},   # none
         },
     ],
 
     # Load stepping
-    "load_steps": 8,
+    "load_steps": 30,
 
     # PETSc solver
     "petsc_options": {
@@ -100,17 +91,16 @@ fem_params = {
 }
 
 # ============================================================
-#  OPTIMIZATION PARAMETERS
+# Optimization Parameters
 # ============================================================
-
 opt = {
     "max_iter": 100,
     "opt_tol": 1e-5,
 
-    # Volume fraction for density
+    # Volume fraction contraint for density
     "vol_frac_rho": 0.50,
 
-    # Magnetic material volume fraction
+    # Magnetic material volume fraction constraints
     "vol_frac_phi": 0.10,
     "phi_cap": 0.30,
 
@@ -118,11 +108,11 @@ opt = {
     "solid_zone": lambda x: np.full(x.shape[1], False),
     "void_zone":  lambda x: np.full(x.shape[1], False),
 
-    # Penalty
+    # SIMP Parameters
     "penalty": 3.0,
     "epsilon": 1e-6,
 
-    # FILTERING
+    # Filter parameters
     "filter_radius": 1.5,
     "beta_interval": 100,
     "beta_max": 32.0,
@@ -152,52 +142,38 @@ opt = {
         "schedule": "linear",   # "linear" or "exp"
     },
 
-
-    # ------------------------------------------------------------
-    # OBJECTIVE REGULARIZATION (NOT A CONSTRAINT)
-    # ------------------------------------------------------------
-
     # Compliance constraint 
     "compliance_constraint": False,
-    "compliance_ref": 0.7,  # start 0.255
+    "compliance_ref": 0.7, 
     "compliance_gamma": 1.0,  
-
-    # Reference compliance for OBJECTIVE scaling ONLY
-    # Use iteration-1 compliance (~3.4e-03 from your logs)
-    "compliance_ref": 3.4e-03,
 
     # Objective
     "objective_type": "max_disp_norm", # compliance, max_disp, disp_track
     "enforce_volume_equality": True,
 
     # Output
-    "output_dir": "./results_MAX_MooneyN2/",
-    "sim_output_interval": 20,
-    "sim_image_output_interval": 20,
+    "output_dir": "./results_MAXX_MooneyN2/",
+    "sim_output_interval": 5,
+    "sim_image_output_interval": 5,
 }
 
 # ============================================================
-#  DESIGN VARIABLE TOGGLES
+# Design Variables
 # ============================================================
-
 design_variables = {
     "rho": {
         "active": False,
-        "type": "density",  
     },
     "phi": {
-        "active": True,
-        "type": "scalar",    
+        "active": True, 
     },
     "theta": {
-        "active": False,
-        "type": "angle",     
+        "active": False,  
     },
 }
 
-
 # ============================================================
-#  RUN
+# Run Optimization
 # ============================================================
 if __name__ == "__main__":
     topopt(fem_params, opt, design_variables=design_variables)

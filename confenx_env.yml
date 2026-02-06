@@ -1,0 +1,12 @@
+name: confenx
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - fenics-dolfinx
+  - matplotlib
+  - jupyter
+  - pip
+  - mpich
+  - scipy
+  - ipykernel
