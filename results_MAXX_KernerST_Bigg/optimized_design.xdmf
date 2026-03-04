@@ -1,0 +1,146 @@
+<?xml version="1.0"?>
+<!DOCTYPE Xdmf SYSTEM "Xdmf.dtd" []>
+<Xdmf Version="3.0" xmlns:xi="https://www.w3.org/2001/XInclude">
+  <Domain>
+    <Grid Name="mesh" GridType="Uniform">
+      <Topology TopologyType="Quadrilateral" NumberOfElements="3300" NodesPerElement="4">
+        <DataItem Dimensions="3300 4" NumberType="Int" Format="HDF">optimized_design.h5:/Mesh/mesh/topology</DataItem>
+      </Topology>
+      <Geometry GeometryType="XY">
+        <DataItem Dimensions="3473 2" Format="HDF">optimized_design.h5:/Mesh/mesh/geometry</DataItem>
+      </Geometry>
+    </Grid>
+    <Grid Name="phi_eff" GridType="Collection" CollectionType="Temporal">
+      <Grid Name="phi_eff" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0" />
+        <Attribute Name="phi_eff" AttributeType="Scalar" Center="Node">
+          <DataItem Dimensions="3473 1" Format="HDF">optimized_design.h5:/Function/phi_eff/0</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="phi_eff" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="5" />
+        <Attribute Name="phi_eff" AttributeType="Scalar" Center="Node">
+          <DataItem Dimensions="3473 1" Format="HDF">optimized_design.h5:/Function/phi_eff/5</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="phi_eff" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="10" />
+        <Attribute Name="phi_eff" AttributeType="Scalar" Center="Node">
+          <DataItem Dimensions="3473 1" Format="HDF">optimized_design.h5:/Function/phi_eff/10</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="phi_eff" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="15" />
+        <Attribute Name="phi_eff" AttributeType="Scalar" Center="Node">
+          <DataItem Dimensions="3473 1" Format="HDF">optimized_design.h5:/Function/phi_eff/15</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="phi_eff" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="20" />
+        <Attribute Name="phi_eff" AttributeType="Scalar" Center="Node">
+          <DataItem Dimensions="3473 1" Format="HDF">optimized_design.h5:/Function/phi_eff/20</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="phi_eff" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="25" />
+        <Attribute Name="phi_eff" AttributeType="Scalar" Center="Node">
+          <DataItem Dimensions="3473 1" Format="HDF">optimized_design.h5:/Function/phi_eff/25</DataItem>
+        </Attribute>
+      </Grid>
+    </Grid>
+    <Grid Name="rho_phys" GridType="Collection" CollectionType="Temporal">
+      <Grid Name="rho_phys" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0" />
+        <Attribute Name="rho_phys" AttributeType="Scalar" Center="Node">
+          <DataItem Dimensions="3473 1" Format="HDF">optimized_design.h5:/Function/rho_phys/0</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="rho_phys" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="5" />
+        <Attribute Name="rho_phys" AttributeType="Scalar" Center="Node">
+          <DataItem Dimensions="3473 1" Format="HDF">optimized_design.h5:/Function/rho_phys/5</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="rho_phys" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="10" />
+        <Attribute Name="rho_phys" AttributeType="Scalar" Center="Node">
+          <DataItem Dimensions="3473 1" Format="HDF">optimized_design.h5:/Function/rho_phys/10</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="rho_phys" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="15" />
+        <Attribute Name="rho_phys" AttributeType="Scalar" Center="Node">
+          <DataItem Dimensions="3473 1" Format="HDF">optimized_design.h5:/Function/rho_phys/15</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="rho_phys" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="20" />
+        <Attribute Name="rho_phys" AttributeType="Scalar" Center="Node">
+          <DataItem Dimensions="3473 1" Format="HDF">optimized_design.h5:/Function/rho_phys/20</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="rho_phys" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="25" />
+        <Attribute Name="rho_phys" AttributeType="Scalar" Center="Node">
+          <DataItem Dimensions="3473 1" Format="HDF">optimized_design.h5:/Function/rho_phys/25</DataItem>
+        </Attribute>
+      </Grid>
+    </Grid>
+    <Grid Name="sigma_vm" GridType="Collection" CollectionType="Temporal">
+      <Grid Name="sigma_vm" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0" />
+        <Attribute Name="sigma_vm" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="3300 1" Format="HDF">optimized_design.h5:/Function/sigma_vm/0</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="sigma_vm" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="5" />
+        <Attribute Name="sigma_vm" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="3300 1" Format="HDF">optimized_design.h5:/Function/sigma_vm/5</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="sigma_vm" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="10" />
+        <Attribute Name="sigma_vm" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="3300 1" Format="HDF">optimized_design.h5:/Function/sigma_vm/10</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="sigma_vm" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="15" />
+        <Attribute Name="sigma_vm" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="3300 1" Format="HDF">optimized_design.h5:/Function/sigma_vm/15</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="sigma_vm" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="20" />
+        <Attribute Name="sigma_vm" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="3300 1" Format="HDF">optimized_design.h5:/Function/sigma_vm/20</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="sigma_vm" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="25" />
+        <Attribute Name="sigma_vm" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="3300 1" Format="HDF">optimized_design.h5:/Function/sigma_vm/25</DataItem>
+        </Attribute>
+      </Grid>
+    </Grid>
+  </Domain>
+</Xdmf>

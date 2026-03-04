@@ -46,6 +46,7 @@ class WrapNonlinearProblem:
         self.u = u  
         self.problem = DolfinxNonlinearProblem(R, u, bcs) 
         self.solver = NewtonSolver(u.function_space.mesh.comm, self.problem)  #solve R(u)=0 iteratively
+       
         self.solver.line_search = "bt"
         self.bcs = bcs
 
@@ -53,12 +54,6 @@ class WrapNonlinearProblem:
         self.solver.atol = 1e-4 # absolute residual norm
         self.solver.rtol = 1e-4  # relative residual norm
         self.solver.convergence_criterion = "incremental"
-
-        # Optional PETSc settings from dictionary
-        for k, v in petsc_options.items():
-            from petsc4py import PETSc
-            PETSc.Options().setValue(k, v) 
-        self.solver.krylov_solver.setFromOptions()  
 
     def solve_fem(self):
         """

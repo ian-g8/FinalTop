@@ -213,11 +213,34 @@ def form_fem(fem_params, opt):
     opt["B_app"] = B_app
 
     # Boundary conditions
+    
+    #dim = mesh.topology.dim
+    #fdim = dim - 1
+    #disp_facets = locate_entities_boundary(mesh, fdim, fem_params["disp_bc"])
+    #bc = dirichletbc(Constant(mesh, np.full(dim, 0.0)),
+    #                 locate_dofs_topological(V, fdim, disp_facets), V)
+
+    # ============================================================
+    # Boundary / Interior Displacement BC
+    # ============================================================
+
     dim = mesh.topology.dim
     fdim = dim - 1
-    disp_facets = locate_entities_boundary(mesh, fdim, fem_params["disp_bc"])
-    bc = dirichletbc(Constant(mesh, np.full(dim, 0.0)),
-                     locate_dofs_topological(V, fdim, disp_facets), V)
+
+    interior_bc = fem_params.get("interior_BC", False)
+
+    if interior_bc:
+        # Clamp interior DOFs geometrically (for hub clamps etc.)
+        disp_dofs = fem.locate_dofs_geometrical(V, fem_params["disp_bc"])
+
+    else:
+        # Standard boundary facet BC (original behavior)
+        disp_facets = locate_entities_boundary(mesh, fdim, fem_params["disp_bc"])
+        disp_dofs = locate_dofs_topological(V, fdim, disp_facets)
+
+    bc = dirichletbc(Constant(mesh, np.full(dim, 0.0)), disp_dofs, V)
+
+
 
     # Tractions
     facets, markers, traction_constants, tractions = [], [], [], [] 

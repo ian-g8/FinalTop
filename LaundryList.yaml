@@ -1,0 +1,49 @@
+FENITOP WORKFLOW REFACTOR TODO LIST
+
+1) Evaluate audit and edits
+   1a) Fix load stepping mismatch
+       - Add u_field reset in evaluate before load stepping (match topopt behavior)
+       - Confirm magnetic ramp logic identical between topopt and evaluate
+   1b) Fix theta inactive remanence direction issue
+       - Ensure B_rem_dir is set before form_fem build
+       - Verify fallback_dir behavior matches fem initialization
+   1c) Fix fem_params mutation risk
+       - Replace shallow dict copy with deep copy for nested traction_bcs
+       - Ensure no cross-model leakage between evaluation loops
+   1d) Standardize reporting metrics
+       - Decide whether compliance or max displacement is the canonical metric
+       - Make evaluate logging consistent with topopt conventions
+   1e) Verify field consistency
+       - Confirm phi_eff definition consistent (rho * phi)
+       - Confirm .npy loading matches mesh/dof ordering
+       - Confirm theta/m_eff export logic consistent with fem definitions
+
+2) Create evaluate driver structure
+   2a) Move evaluate logic into fenitop/evaluate.py
+   2b) Define evaluate(fem_params, design_files, model_sweep_config) API
+   2c) Create input_evaluate.py that mirrors input_topopt.py structure
+   2d) Remove hardcoded model loops from evaluation script
+   2e) Ensure evaluate only loads fields and solves (no duplicated FEA logic)
+
+3) Centralize solver logic
+   3a) Create solver_utils.py inside fenitop
+   3b) Implement solve_with_load_stepping(...)
+   3c) Refactor topopt to use shared solver function
+   3d) Refactor evaluate to use same shared solver function
+   3e) Ensure magnetic and traction ramping handled in one place only
+
+4) Structural cleanup
+   4a) Define strict separation:
+       - fem.py = physics and weak form only
+       - solver_utils.py = solve mechanics only
+       - topopt.py = optimization loop only
+       - evaluate.py = model sweep only
+   4b) Remove any duplicated logic between topopt and evaluate
+   4c) Verify consistent field naming and output conventions (.bp, .npy)
+
+5) Validation and regression testing
+   5a) Run one model through topopt and evaluate with identical inputs
+   5b) Compare displacement fields numerically
+   5c) Compare strain energy/compliance values
+   5d) Confirm no solver path dependence differences
+   5e) Lock in baseline test case for future regression checks

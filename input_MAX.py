@@ -36,11 +36,11 @@ fem_params = {
     "shear_modulus": 100.0,      # base shear modulus G0
     "poisson's ratio": 0.49,      # only used for Kerner model if selected
     "hyperelastic": True,
-    "hyperModel": "neoHookean2",
+    "hyperModel": "stVenant", # stVenant , neoHookean2
 
     # Shear modulus microstructure model
     # options: "default", "guth", "mooney", "kerner"
-    "G_model": "mooney",
+    "G_model": "kerner",
 
     # Boundary conditions
     # Fix left edge (x=0)
@@ -53,7 +53,7 @@ fem_params = {
 
     # Magnetic parameters
     "mu0": 1.256e3,                 # magnetic permeability
-    "B_rem_mag": 250.0,            # remanent field magnitude
+    "B_rem_mag": 200.0,            # remanent field magnitude
     "B_rem_dir": (1.0, 0.0),        # direction of remanent field (x-direction)
     "B_app_mag": 0.0,
     "B_app_dir": (0.0, 1.0),
@@ -70,16 +70,16 @@ fem_params = {
 
     "load_cases": [
         {
-            "name": "B_up_MooneyN2",
+            "name": "B_up_KernerST_Big",
             "weight": 1.0,
-            "B_app_mag": 500.0,
+            "B_app_mag": 400.0,
             "B_app_dir": (0.0, 1.0),
             "tractions": {},   # none
         },
     ],
 
     # Load stepping
-    "load_steps": 30,
+    "load_steps": 50,
 
     # PETSc solver
     "petsc_options": {
@@ -94,7 +94,7 @@ fem_params = {
 # Optimization Parameters
 # ============================================================
 opt = {
-    "max_iter": 100,
+    "max_iter": 25,
     "opt_tol": 1e-5,
 
     # Volume fraction contraint for density
@@ -152,7 +152,7 @@ opt = {
     "enforce_volume_equality": True,
 
     # Output
-    "output_dir": "./results_MAXX_MooneyN2/",
+    "output_dir": "./results_MAXX_KernerST_Bigg/",
     "sim_output_interval": 5,
     "sim_image_output_interval": 5,
 }
