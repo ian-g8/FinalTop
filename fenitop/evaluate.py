@@ -186,24 +186,16 @@ def _solve_load_case_with_load_stepping(
 
         femProblem.solve_fem()
 
-
-def _write_bp(output_dir: str,
-              mesh,
-              G_model: str,
-              hyperModel: str,
-              lc_name: str,
-              rho_phys_field,
-              phi_phys_field,
-              phi_eff_field,
-              u_field,
-              theta_phys_field=None,
-              write_theta=False):
+def _build_bp_fields(mesh,
+                     rho_phys_field,
+                     phi_phys_field,
+                     phi_eff_field,
+                     u_field,
+                     theta_phys_field=None,
+                     write_theta=False):
     """
-    Writes a single BP file for this (model, hyperModel, load case).
+    Builds the list of fields written to BP output.
     """
-    bp_name = f"disp_{G_model}_{hyperModel}_{lc_name}.bp"
-    bp_path = os.path.join(output_dir, bp_name)
-
     fields = [rho_phys_field, phi_phys_field, phi_eff_field, u_field]
 
     if write_theta and theta_phys_field is not None:
@@ -223,10 +215,41 @@ def _write_bp(output_dir: str,
         m_eff.interpolate(fem.Expression(m_expr, V_vec_cg.element.interpolation_points()))
         fields.append(m_eff)
 
-    writer = dolfinx.io.VTXWriter(mesh.comm, bp_path, fields, engine="BP4")
-    writer.write(0.0)
-    writer.close()
+    return fields
 
+def _compute_marker_avg_displacement(u_field: fem.Function, marker_func):
+    """
+    Computes average displacement over a user-defined marker.
+
+    marker_func should be a callable like:
+        lambda x: np.isclose(x[0], L)
+
+    Returns:
+        ux_avg, uy_avg, u_mag_avg
+
+    If marker_func is None, or if no DOFs are found on the marker,
+    all values return as zero.
+    """
+    if marker_func is None:
+        return 0.0, 0.0, 0.0
+
+    V = u_field.function_space
+    coords = V.tabulate_dof_coordinates()
+
+    dim = u_field.function_space.mesh.geometry.dim
+    u_vals = u_field.x.array.reshape((-1, dim))
+
+    mask = marker_func(coords.T)
+
+    if np.count_nonzero(mask) == 0:
+        return 0.0, 0.0, 0.0
+
+    ux_avg = float(np.mean(u_vals[mask, 0]))
+    uy_avg = float(np.mean(u_vals[mask, 1]))
+
+    u_mag_avg = float(np.sqrt(ux_avg**2 + uy_avg**2))
+
+    return ux_avg, uy_avg, u_mag_avg
 
 # ============================================================
 # Public API
@@ -248,7 +271,7 @@ def evaluate(fem_params: dict,
           "write_bp": bool (default True)
           "write_csv": bool (default True)
           "csv_name": str (default "model_comparison.csv")
-          "compute_max_disp": bool (default True)
+          "measurement_marker": callable, optional
           "compute_compliance": bool (default False)
           "allow_parallel_npy": bool (default False)
       - design_source:
@@ -265,7 +288,7 @@ def evaluate(fem_params: dict,
     write_bp = bool(eval_config.get("write_bp", True))
     write_csv = bool(eval_config.get("write_csv", True))
     csv_name = str(eval_config.get("csv_name", "model_comparison.csv"))
-    compute_max_disp = bool(eval_config.get("compute_max_disp", True))
+    measurement_marker = eval_config.get("measurement_marker", None)
     compute_compliance = bool(eval_config.get("compute_compliance", False))
 
     mesh = fem_params["mesh"]
@@ -367,6 +390,29 @@ def evaluate(fem_params: dict,
             if load_cases is None:
                 load_cases = [{"name": "single"}]
 
+            # Open one BP writer per (G_model, HyperModel), with load cases as time steps
+            bp_writer = None
+            if write_bp:
+                bp_name = f"disp_{G_model}_{hyperModel}.bp"
+                bp_path = os.path.join(output_dir, bp_name)
+
+                bp_fields = _build_bp_fields(
+                    mesh=mesh,
+                    rho_phys_field=rho_phys_field,
+                    phi_phys_field=phi_phys_field,
+                    phi_eff_field=phi_eff_field,
+                    u_field=u_field,
+                    theta_phys_field=theta_phys_field,
+                    write_theta=bool(theta_active),
+                )
+
+                bp_writer = dolfinx.io.VTXWriter(
+                    mesh.comm,
+                    bp_path,
+                    bp_fields,
+                    engine="BP4"
+                )
+
             # Loop load cases
             for lc in load_cases:
                 lc_name = lc.get("name", "unnamed")
@@ -391,10 +437,10 @@ def evaluate(fem_params: dict,
                 )
 
                 # Metrics
-                max_disp = None
-                if compute_max_disp:
-                    u_array = u_field.x.array
-                    max_disp = float(np.max(np.abs(u_array)))
+                ux_avg, uy_avg, u_mag_avg = _compute_marker_avg_displacement(
+                    u_field,
+                    measurement_marker
+                )
 
                 comp_val = None
                 if compute_compliance:
@@ -412,27 +458,19 @@ def evaluate(fem_params: dict,
 
                 if comm.rank == 0:
                     msg = f"[{G_model:>7s} | {hyperModel:>11s} | {lc_name}]"
-                    if compute_max_disp:
-                        msg += f"  max|u| = {max_disp:.6e}"
+                    msg += (
+                        f"  ux_avg = {ux_avg:.6e}"
+                        f"  uy_avg = {uy_avg:.6e}"
+                        f"  |u|_avg = {u_mag_avg:.6e}"
+                    )
                     if compute_compliance:
                         msg += f"  comp = {float(comp_val):.6e}"
                     print(msg, flush=True)
 
                 # Output BP
-                if write_bp:
-                    _write_bp(
-                        output_dir=output_dir,
-                        mesh=mesh,
-                        G_model=G_model,
-                        hyperModel=hyperModel,
-                        lc_name=lc_name,
-                        rho_phys_field=rho_phys_field,
-                        phi_phys_field=phi_phys_field,
-                        phi_eff_field=phi_eff_field,
-                        u_field=u_field,
-                        theta_phys_field=theta_phys_field,
-                        write_theta=bool(theta_active),
-                    )
+                if bp_writer is not None:
+                    bp_time = float(lc.get("B_app_mag", 0.0))
+                    bp_writer.write(bp_time)
 
                 # Record row
                 row = {
@@ -440,45 +478,16 @@ def evaluate(fem_params: dict,
                     "HyperModel": hyperModel,
                     "LoadCase": lc_name,
                 }
-                if compute_max_disp:
-                    row["MaxDisplacement"] = max_disp
+                row["ux_avg"] = ux_avg
+                row["uy_avg"] = uy_avg
+                row["u_mag_avg"] = u_mag_avg
                 if compute_compliance:
                     row["Compliance"] = float(comp_val)
 
                 rows.append(row)
-
-    # ---------------------------
-    # Add spread metrics (like evaluate_MAX)
-    # ---------------------------
-    # Spread across G models holding HyperModel fixed
-    by_H = {}
-    for r in rows:
-        key = (r["HyperModel"], r["LoadCase"])
-        by_H.setdefault(key, []).append(r)
-
-    for key, group in by_H.items():
-        if not compute_max_disp:
-            continue
-        disps = np.array([g["MaxDisplacement"] for g in group], dtype=float)
-        mean_u = float(np.mean(disps))
-        spread_percent = 100.0 * (np.max(disps) - np.min(disps)) / mean_u if mean_u > 0 else 0.0
-        for g in group:
-            g["G_model_spread_percent"] = spread_percent
-
-    # Spread across hyperelastic models holding G_model fixed
-    by_G = {}
-    for r in rows:
-        key = (r["G_model"], r["LoadCase"])
-        by_G.setdefault(key, []).append(r)
-
-    for key, group in by_G.items():
-        if not compute_max_disp:
-            continue
-        disps = np.array([g["MaxDisplacement"] for g in group], dtype=float)
-        mean_u = float(np.mean(disps))
-        spread_percent = 100.0 * (np.max(disps) - np.min(disps)) / mean_u if mean_u > 0 else 0.0
-        for g in group:
-            g["HyperModel_spread_percent"] = spread_percent
+                
+            if bp_writer is not None:
+                bp_writer.close()
 
     # ---------------------------
     # Write CSV
@@ -486,9 +495,15 @@ def evaluate(fem_params: dict,
     if comm.rank == 0 and write_csv:
         csv_path = os.path.join(output_dir, csv_name)
 
-        fieldnames = ["G_model", "HyperModel", "LoadCase"]
-        if compute_max_disp:
-            fieldnames += ["MaxDisplacement", "G_model_spread_percent", "HyperModel_spread_percent"]
+        fieldnames = [
+            "G_model",
+            "HyperModel",
+            "LoadCase",
+            "ux_avg",
+            "uy_avg",
+            "u_mag_avg",
+        ]
+
         if compute_compliance:
             fieldnames += ["Compliance"]
 

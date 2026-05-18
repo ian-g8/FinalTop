@@ -1,0 +1,3 @@
+[
+{ "rank": 0, "start": "Mon_May_18_09:28:04_2026", "threads": 1, "bytes": 5998674, "mkdir_mus": 11, "aggregation_mus": 0, "meta_sort_merge_mus": 67, "minmax_mus": 909, "memcpy_mus": 172, "buffering_mus": 9601, "transport_0": { "type": "File_POSIX", "close_mus": 718, "write_mus": 3839, "open_mus": 278}, "transport_1": { "type": "File_POSIX", "close_mus": 0, "write_mus": 19, "open_mus": 71} }
+]
