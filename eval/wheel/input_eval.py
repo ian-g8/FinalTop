@@ -24,7 +24,8 @@ wheel = {
     "lc": 0.01,
 
     "r_inner": 0.9,
-    "t": 0.0125,
+    #"t": 0.0125,
+    "t": 0.05,
     "r_hub": None,
 
     "phi_cap": 0.30,
@@ -174,21 +175,21 @@ fem_params = {
         {
             "name": "B_up",
             "weight": 1.0,
-            "B_app_mag": 500.0,
+            "B_app_mag": 125.0,
             "B_app_dir": (0.0, 1.0),
             "tractions": {},
         },
     ],
 
-    "load_steps": 50,
+    "load_steps": 100,
 
     "quadrature_degree": 2,
 
     "mu0": 1.256e3,
-    "B_rem_mag": 300.0,
+    "B_rem_mag": 100.0,
     "B_rem_dir": (1.0, 0.0),
 
-    "B_app_mag": 500.0,
+    "B_app_mag": 100.0,
     "B_app_dir": (0.0, 1.0),
 
     "petsc_options": {
@@ -229,8 +230,9 @@ def right_rim_marker(x):
 eval_config = {
 
     "G_models": ["default", "guth", "mooney", "kerner"],
+    #"G_models": ["kerner"],
     "hyperelastic_models": ["stVenant", "neoHookean1", "neoHookean2"],
-    #"hyperelastic_models": ["stVenant", "neoHookean2"],
+    #"hyperelastic_models": ["stVenant"],
 
     "output_dir": RESULTS_DIR,
 
@@ -265,11 +267,15 @@ def build_wheel_design(mesh):
 
     rho = np.ones(ndofs)
 
-    phi = np.zeros(ndofs)
-    phi[(r > r_inner) & (r <= R)] = wheel["phi_cap"]
+    #phi = np.zeros(ndofs)
+    #phi[(r > r_inner) & (r <= R)] = wheel["phi_cap"]
+    phi = wheel["phi_cap"] * np.ones(ndofs)
 
     # RADIAL MAGNETIZATION
-    theta = np.arctan2(y, x)
+    #theta = np.arctan2(y, x)
+    # CONSTANT UPWARD MAGNETIZATION
+    #theta = (np.pi / 2.0) * np.ones_like(x)
+    theta = np.zeros_like(x)
 
     return rho, phi, theta
 
