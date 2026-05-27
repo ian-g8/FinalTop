@@ -21,7 +21,7 @@ from fenitop.evaluate import evaluate
 
 gripper = {
 
-    "lc": 0.01,
+    "lc": 0.008,
 
     "base_width": 0.5,
     "base_height": 0.25,
@@ -316,6 +316,7 @@ def right_tip_marker(x):
 eval_config = {
 
     "G_models": ["default", "guth", "mooney", "kerner"],
+    #"G_models": ["default"],
     "hyperelastic_models": ["stVenant", "neoHookean1", "neoHookean2"],
     #"hyperelastic_models": ["stVenant"],
 

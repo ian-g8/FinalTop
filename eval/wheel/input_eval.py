@@ -21,7 +21,7 @@ from fenitop.evaluate import evaluate
 
 wheel = {
     "R": 1.0,
-    "lc": 0.01,
+    "lc": 0.006,
 
     "r_inner": 0.9,
     #"t": 0.0125,

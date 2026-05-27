@@ -22,7 +22,7 @@ from fenitop.evaluate import evaluate
 beam = {
     "L": 1.0,
     "H": 0.2,
-    "lc": 0.01,
+    "lc": 0.008,
     "phi_cap": 0.30,
 }
 

@@ -330,10 +330,7 @@ def form_fem(fem_params, opt):
     I = ufl.Identity(dim)          #Identity Matrix
     F = ufl.variable(ufl.Identity(dim) + ufl.grad(u_field)) # Deformation gradient
     C = F.T * F                    # Right Cauchy-Green tensor
-
-    #Ic = ufl.tr(C)                 # First invariant
-    Ic = ufl.tr(C) + 1.0                # First invariant
-    
+    Ic = ufl.tr(C)                 # First invariant
     J = ufl.det(F)                 # Jacobian determinant
 
     # Stored strain energy density 
