@@ -21,17 +21,17 @@ from fenitop.evaluate import evaluate
 
 gripper = {
 
-    "lc": 0.008,
+    "lc": 0.08,
 
-    "base_width": 0.5,
-    "base_height": 0.25,
+    "base_width": 5.0,
+    "base_height": 2.5,
 
-    "center_divider_width": 0.6,
+    "center_divider_width": 6.0,
 
-    "diagonal_length": 2.0,
+    "diagonal_length": 20.0,
 
-    "arm_length": 2.0,
-    "arm_width": 0.25,
+    "arm_length": 20.0,
+    "arm_width": 2.5,
 
     "diag_angle": np.pi/3,
 
