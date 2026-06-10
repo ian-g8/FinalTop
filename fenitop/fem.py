@@ -176,21 +176,39 @@ def form_fem(fem_params, opt):
         B_rem_field.interpolate(_mag_flux_density_init)
 
     else:
-        # Prescribed direction from input (unit vector)
-        B_rem_dir = np.array(fem_params.get("B_rem_dir", (1.0, 0.0)), dtype=np.float64)
-        nrm = np.linalg.norm(B_rem_dir)
-        if nrm > 0:
-            B_rem_dir /= nrm
+        # Prescribed spatial remanence field from input, if provided.
+        B_rem_func = fem_params.get("B_rem_func", None)
 
-        def mag_flux_density(x):
-            f = np.zeros((mesh.geometry.dim, x.shape[1]), dtype=np.float64)
-            f[0, :] = B_rem_mag * B_rem_dir[0]
-            f[1, :] = B_rem_mag * B_rem_dir[1]
-            return f
+        if B_rem_func is not None:
+            def mag_flux_density(x):
+                dirs = B_rem_func(x)
+
+                f = np.zeros((mesh.geometry.dim, x.shape[1]), dtype=np.float64)
+
+                nrm = np.sqrt(dirs[0, :]**2 + dirs[1, :]**2)
+                good = nrm > 1.0e-14
+
+                f[0, good] = B_rem_mag * dirs[0, good] / nrm[good]
+                f[1, good] = B_rem_mag * dirs[1, good] / nrm[good]
+
+                return f
+
+        else:
+            # Prescribed uniform direction from input.
+            B_rem_dir = np.array(fem_params.get("B_rem_dir", (1.0, 0.0)), dtype=np.float64)
+            nrm = np.linalg.norm(B_rem_dir)
+            if nrm > 0:
+                B_rem_dir /= nrm
+
+            def mag_flux_density(x):
+                f = np.zeros((mesh.geometry.dim, x.shape[1]), dtype=np.float64)
+                f[0, :] = B_rem_mag * B_rem_dir[0]
+                f[1, :] = B_rem_mag * B_rem_dir[1]
+                return f
 
         B_rem_field.interpolate(mag_flux_density)
-        B_rem = B_rem_field  # physics uses the interpolated field when theta is inactive
-
+        B_rem = B_rem_field
+        
     # Expose both for downstream use
     opt["B_rem_field"] = B_rem_field
     opt["B_rem_expr"] = B_rem
@@ -399,7 +417,26 @@ def form_fem(fem_params, opt):
         u_norm = ufl.sqrt(u_field[0]**2 + u_field[1]**2)
         J = - u_norm * ds(target_marker)
 
+    elif obj_type == "min_disp_norm":
+        # Minimize displacement magnitude over the domain.
+        # Normalized so MMA objective gradients do not swamp volume constraints.
+        disp_ref = float(opt.get("disp_norm_ref", 1.0))
+        if disp_ref <= 0.0:
+            raise RuntimeError("opt['disp_norm_ref'] must be positive.")
+        J = (1.0 / disp_ref) * ufl.inner(u_field, u_field) * dx
+        
 
+    elif obj_type == "min_boundary_disp_norm":
+        # Minimize squared displacement magnitude on the loaded/output boundary.
+        # This avoids signed compliance gaming but keeps the objective focused
+        # where the mechanical traction is applied.
+        target_marker = int(opt.get("boundary_disp_marker", 0))
+        disp_ref = float(opt.get("boundary_disp_ref", 1.0))
+        if disp_ref <= 0.0:
+            raise RuntimeError("opt['boundary_disp_ref'] must be positive.")
+        J = (1.0 / disp_ref) * ufl.inner(u_field, u_field) * ds(target_marker)
+
+        
     elif obj_type == "boundary_disp":
         # Directional boundary displacement objective (actuator/gripper style)
         ds_obj = opt.get("ds_obj", None)
@@ -430,6 +467,143 @@ def form_fem(fem_params, opt):
             marker = int(cfg.get("marker", i))
             J += - w * ufl.inner(u_field, d_vec) * ds_obj(marker)
 
+    elif obj_type == "rotational_disp":
+        # Rotational displacement objective.
+        #
+        # This maximizes tangential displacement of an output boundary
+        # around a user-defined rotation center.
+        #
+        # For rotation_sign = +1:
+        #     t = [-ry, rx] / ||r||
+        # rewards CCW rotation.
+        #
+        # For rotation_sign = -1:
+        #     rewards CW rotation.
+
+        ds_obj = opt.get("ds_obj", None)
+        objective_bcs = opt.get("objective_bcs", [])
+
+        if ds_obj is None or objective_bcs is None or len(objective_bcs) == 0:
+            raise RuntimeError(
+                "objective_type='rotational_disp' requires opt['objective_bcs'] "
+                "so fem.py can build ds_obj markers."
+            )
+
+        X = ufl.SpatialCoordinate(mesh)
+
+        J = 0
+        for i, cfg in enumerate(objective_bcs):
+
+            center = cfg.get("center", None)
+            if center is None:
+                raise RuntimeError(
+                    f"objective_bcs[{i}] missing 'center' for rotational_disp."
+                )
+
+            xc = float(center[0])
+            yc = float(center[1])
+
+            marker = int(cfg.get("marker", i))
+            w = float(cfg.get("weight", 1.0))
+            rotation_sign = float(cfg.get("rotation_sign", 1.0))
+
+            rx = X[0] - xc
+            ry = X[1] - yc
+
+            # Small epsilon prevents division by zero if a facet lies too close to center.
+            rnorm = ufl.sqrt(rx**2 + ry**2 + 1.0e-12)
+
+            # Unit tangent direction.
+            # +1 gives CCW, -1 gives CW.
+            t_vec = rotation_sign * ufl.as_vector((
+                -ry / rnorm,
+                 rx / rnorm
+            ))
+
+            # Minimize negative tangential displacement = maximize rotation.
+            J += -w * ufl.inner(u_field, t_vec) * ds_obj(marker)
+            
+    elif obj_type == "rotational_disp_band":
+        # Volumetric rotational displacement objective over a thin annular band.
+        # This is for internal output regions where ds boundary markers are awkward.
+        #
+        # J = - ∫ w_band(x) u · t dx
+        #
+        # rotation_sign = +1 rewards CCW rotation.
+        # rotation_sign = -1 rewards CW rotation.
+
+        center = opt.get("rotation_center", None)
+        if center is None:
+            raise RuntimeError(
+                "objective_type='rotational_disp_band' requires opt['rotation_center']."
+            )
+
+        xc = float(center[0])
+        yc = float(center[1])
+
+        R_obj = float(opt.get("rotation_radius", 1.0))
+        sigma = float(opt.get("rotation_band_sigma", 0.10))
+        rotation_sign = float(opt.get("rotation_sign", 1.0))
+        w_obj = float(opt.get("rotation_weight", 1.0))
+
+        X = ufl.SpatialCoordinate(mesh)
+
+        rx = X[0] - xc
+        ry = X[1] - yc
+
+        r = ufl.sqrt(rx**2 + ry**2 + 1.0e-12)
+
+        # Smooth annular band centered at r = R_obj
+        w_band = ufl.exp(-((r - R_obj) / sigma)**2)
+
+        # Unit tangent direction
+        t_vec = rotation_sign * ufl.as_vector((
+            -ry / r,
+             rx / r
+        ))
+
+        J = -w_obj * w_band * ufl.inner(u_field, t_vec) * dx
+        
+    elif obj_type == "rotational_disp_band_energy":
+        # Maximize CCW rotational displacement
+        # while also rewarding elastic strain energy storage.
+
+        center = opt.get("rotation_center", None)
+        if center is None:
+            raise RuntimeError(
+                "objective_type='rotational_disp_band_energy' requires opt['rotation_center']."
+            )
+
+        xc = float(center[0])
+        yc = float(center[1])
+
+        R_obj = float(opt.get("rotation_radius", 1.0))
+        sigma = float(opt.get("rotation_band_sigma", 0.10))
+        rotation_sign = float(opt.get("rotation_sign", 1.0))
+        w_obj = float(opt.get("rotation_weight", 1.0))
+
+        alpha_energy = float(
+            opt.get("rotation_energy_weight", 0.01)
+        )
+
+        X = ufl.SpatialCoordinate(mesh)
+
+        rx = X[0] - xc
+        ry = X[1] - yc
+
+        r = ufl.sqrt(rx**2 + ry**2 + 1.0e-12)
+
+        w_band = ufl.exp(-((r - R_obj) / sigma)**2)
+
+        t_vec = rotation_sign * ufl.as_vector((
+            -ry / r,
+             rx / r
+        ))
+
+        J_rot = -w_obj * w_band * ufl.inner(u_field, t_vec)
+
+        J = (J_rot - alpha_energy * W_elastic) * dx
+        
     elif obj_type == "max_disp_plus_comp":
         # Max displacement + compliance regularization
         target_marker = 0

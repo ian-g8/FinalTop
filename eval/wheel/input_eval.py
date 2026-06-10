@@ -188,7 +188,7 @@ fem_params = {
     "B_rem_mag": 100.0,
     "B_rem_dir": (1.0, 0.0),
 
-    "B_app_mag": 100.0,
+    "B_app_mag": 100.0, #overwritten
     "B_app_dir": (0.0, 1.0),
 
     "petsc_options": {

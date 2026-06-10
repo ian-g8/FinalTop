@@ -345,25 +345,39 @@ def topopt(fem_params, opt, design_variables=None):
 
     # Initialize density field (rho)
     centers_rho = rho_field.function_space.tabulate_dof_coordinates()[:num_rho_elems].T
-    solid, void = opt["solid_zone"](centers_rho), opt["void_zone"](centers_rho)
 
+    # Backward-compatible default:
+    # if rho-specific zones are not provided, use old solid_zone / void_zone.
+    rho_solid = opt.get("rho_solid_zone", opt["solid_zone"])(centers_rho)
+    rho_void  = opt.get("rho_void_zone",  opt["void_zone"])(centers_rho)
     rho_ini = np.full(num_rho_elems, opt["vol_frac_rho"])
-    rho_field.x.petsc_vec.array[:] = rho_ini
 
-    rho_min = np.full(num_rho_elems, 0.05)  #CHANGE lower bound to 0.05 to avoid singular stiffness
+    # Enforce passive rho zones at initialization only.
+    # Do NOT lock rho_min/rho_max here; fixed MMA bounds can stall the update.
+    rho_ini[rho_solid] = 1.0
+    rho_ini[rho_void] = 0.05
+
+    rho_min = np.full(num_rho_elems, 0.05)
     rho_max = np.ones(num_rho_elems)
+
+    rho_field.x.petsc_vec.array[:] = np.clip(rho_ini, rho_min, rho_max)
 
 
     # Initialize magnetic fraction field (phi)
     centers_phi = phi_field.function_space.tabulate_dof_coordinates()[:num_phi_elems].T
-    solid, void = opt["solid_zone"](centers_phi), opt["void_zone"](centers_phi)
+
+    # Backward-compatible default:
+    # if phi-specific zones are not provided, use old solid_zone / void_zone.
+    phi_solid = opt.get("phi_solid_zone", opt["solid_zone"])(centers_phi)
+    phi_void  = opt.get("phi_void_zone",  opt["void_zone"])(centers_phi)
 
     # Physical cap for magnetic material fraction
     phi_cap = opt.get("phi_cap", 0.3)
 
     # Initial distribution (uniform)
     phi_ini = np.full(num_phi_elems, opt["vol_frac_phi"])
-    phi_ini[solid], phi_ini[void] = phi_cap, 0.0
+    phi_ini[phi_solid] = phi_cap
+    phi_ini[phi_void] = 0.0
 
     # Bounds for magnetic fraction (φ ∈ [0, φ_cap])
     phi_min = np.full(num_phi_elems, 0.0)
@@ -376,8 +390,20 @@ def topopt(fem_params, opt, design_variables=None):
     if theta_active:
         theta_field = opt["theta_field"]
 
-        # Initialize to uniform zero-angle (aligned with +x)
-        theta_ini = np.zeros_like(theta_field.x.petsc_vec.array)
+        # Initialize theta from fem_params["theta_init_dir"].
+        # Default is +x if not provided.
+        theta_init_dir = np.array(
+            fem_params.get("theta_init_dir", (1.0, 0.0)),
+            dtype=float
+        )
+
+        nrm = np.linalg.norm(theta_init_dir)
+        if nrm > 0:
+            theta_init_dir /= nrm
+
+        theta0 = float(np.arctan2(theta_init_dir[1], theta_init_dir[0]))
+
+        theta_ini = np.full_like(theta_field.x.petsc_vec.array, theta0)
         theta_field.x.petsc_vec.array[:] = theta_ini
 
         # Bounds: theta ∈ [-pi, pi]
@@ -948,16 +974,16 @@ def topopt(fem_params, opt, design_variables=None):
 
         # Upper volume bounds (global) — ACTIVE vars only
         if rho_active:
-            g_list.append(V_rho_value - opt["vol_frac_rho"])
+            g_list.append(V_rho_value / opt["vol_frac_rho"] - 1.0)
         if phi_active:
-            g_list.append(V_phi_value - opt["vol_frac_phi"])
+            g_list.append(V_phi_value / opt["vol_frac_phi"] - 1.0)
 
         # Lower volume bounds (global, equality enforcement) — ACTIVE vars only
         if opt.get("enforce_volume_equality", False):
             if rho_active:
-                g_list.append(opt["vol_frac_rho"] - V_rho_value)
+                g_list.append(1.0 - V_rho_value / opt["vol_frac_rho"])
             if phi_active:
-                g_list.append(opt["vol_frac_phi"] - V_phi_value)
+                g_list.append(1.0 - V_phi_value / opt["vol_frac_phi"])
 
 
         # Compliance constraints (per load case): g = C/C_ref - gamma
@@ -1020,7 +1046,7 @@ def topopt(fem_params, opt, design_variables=None):
         if rho_active:
             row_parts = []
             if rho_active:
-                row_parts.append(dVdrho)
+                row_parts.append(dVdrho / opt["vol_frac_rho"])
             if phi_active:
                 row_parts.append(np.zeros_like(dVdphi))
             if theta_active:
@@ -1032,7 +1058,7 @@ def topopt(fem_params, opt, design_variables=None):
             if rho_active:
                 row_parts.append(np.zeros_like(dVdrho))
             if phi_active:
-                row_parts.append(dVdphi)
+                row_parts.append(dVdphi / opt["vol_frac_phi"])
             if theta_active:
                 row_parts.append(np.zeros_like(opt["theta_field"].x.petsc_vec.array))
             dgdx_rows.append(np.concatenate(row_parts))
@@ -1045,7 +1071,7 @@ def topopt(fem_params, opt, design_variables=None):
             if rho_active:
                 row_parts = []
                 if rho_active:
-                    row_parts.append(-dVdrho)
+                    row_parts.append(-dVdrho / opt["vol_frac_rho"])
                 if phi_active:
                     row_parts.append(np.zeros_like(dVdphi))
                 if theta_active:
@@ -1057,7 +1083,7 @@ def topopt(fem_params, opt, design_variables=None):
                 if rho_active:
                     row_parts.append(np.zeros_like(dVdrho))
                 if phi_active:
-                    row_parts.append(-dVdphi)
+                    row_parts.append(-dVdphi / opt["vol_frac_phi"])
                 if theta_active:
                     row_parts.append(np.zeros_like(opt["theta_field"].x.petsc_vec.array))
                 dgdx_rows.append(np.concatenate(row_parts))
@@ -1146,7 +1172,6 @@ def topopt(fem_params, opt, design_variables=None):
 
         dgdx = np.vstack(dgdx_rows)
 
-
         # --- MMA update ---
         x_new, change, low, upp = mma_optimizer(
             num_consts, design_vec_size, opt_iter,
@@ -1162,10 +1187,22 @@ def topopt(fem_params, opt, design_variables=None):
 
         # --- Unpack active-only MMA vector back into fields ---
         if rho_active:
-            rho_field.x.petsc_vec.array[:] = x_new[rho_slice].copy()   #BOUNDRY EDIT
+            rho_new = x_new[rho_slice].copy()
+
+            # Re-enforce passive rho zones after MMA update
+            rho_new[rho_solid] = 1.0
+            rho_new[rho_void] = 0.05
+
+            rho_field.x.petsc_vec.array[:] = rho_new
 
         if phi_active:
-            phi_field.x.petsc_vec.array[:] = x_new[phi_slice].copy()
+            phi_new = x_new[phi_slice].copy()
+
+            # Re-enforce passive phi zones after MMA update
+            phi_new[phi_solid] = phi_cap
+            phi_new[phi_void] = 0.0
+
+            phi_field.x.petsc_vec.array[:] = phi_new
 
         if theta_active:
             theta_field.x.petsc_vec.array[:] = x_new[theta_slice].copy()
