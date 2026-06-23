@@ -1,3 +1,26 @@
+"""
+Original FEniTop authors:
+- Yingqi Jia (yingqij2@illinois.edu)
+- Chao Wang (chaow4@illinois.edu)
+- Xiaojia Shelly Zhang (zhangxs@illinois.edu)
+
+Reference:
+- Jia, Y., Wang, C. & Zhang, X.S. FEniTop: a simple FEniCSx implementation
+  for 2D and 3D topology optimization supporting parallel computing.
+  Struct Multidisc Optim 67, 140 (2024).
+  https://doi.org/10.1007/s00158-024-03818-7
+
+Major modifications:
+- Ian Galloway (ian.galloway@mines.sdsmt.edu)
+- Prashant Jha (prashant.jha@sdsmt.edu)
+
+Major additions to sensitivity.py:
+- Adjoint sensitivities for phi and theta design variables
+- Multi-load-case sensitivity support
+- Additional objective and constraint sensitivities
+- Constraint evaluation framework for optimization
+"""
+
 import ufl
 from mpi4py import MPI
 from dolfinx.fem import form, assemble_scalar

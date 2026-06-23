@@ -53,7 +53,7 @@ fem_params = {
             "B_app_mag": float(B),
             "B_app_dir": (0.0, 1.0),
             "tractions": {
-                "out_right": (0.0, -0.50),
+                "out_right": (0.0, -0.75),
             },
         }
         for B in [0, 25, 50, 75, 100, 125, 150, 175, 200, 250]
@@ -72,7 +72,7 @@ fem_params = {
 eval_config = {
     "G_models": ["mooney"],
     "hyperelastic_models": ["neoHookean1"],
-    "output_dir": str(result_dir / "eval_B_sweep"),
+    "output_dir": str(result_dir / "eval_B_sweepLarge"),
     "write_bp": True,
     "write_csv": True,
     "csv_name": "B_sweep.csv",

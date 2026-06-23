@@ -1,3 +1,14 @@
+"""
+Authors:
+- Ian Galloway (ian.galloway@mines.sdsmt.edu)
+- Prashant Jha (prashant.jha@sdsmt.edu)
+
+Purpose:
+- Evaluate a fixed magnetic topology across multiple constitutive models
+- Compare displacement and compliance metrics without re-optimization
+- Export BP and CSV results for post-processing and model comparison
+"""
+
 import os
 import csv
 import numpy as np
@@ -10,11 +21,6 @@ from dolfinx import fem
 
 from fenitop.fem import form_fem
 
-
-# ============================================================
-# Helpers (private)
-# ============================================================
-
 def _safe_unit(v):
     v = np.array(v, dtype=float)
     n = np.linalg.norm(v)
@@ -22,29 +28,12 @@ def _safe_unit(v):
         return v / n
     return np.zeros_like(v)
 
-
-def _ensure_serial_or_raise(comm, eval_config):
-    """
-    Your topopt currently saves .npy arrays on rank 0 only.
-    Those arrays are not MPI-safe to load unless you design-export differently.
-    """
-    allow_parallel = bool(eval_config.get("allow_parallel_npy", False))
-    if comm.size != 1 and not allow_parallel:
-        raise RuntimeError(
-            "evaluate() currently expects SERIAL execution (mpirun -n 1).\n"
-            "Reason: your saved .npy arrays are rank-local from the optimization run.\n"
-            "If you want MPI>1 evaluation, switch design export/import to XDMF checkpointing\n"
-            "or explicitly set eval_config['allow_parallel_npy']=True (not recommended unless you know arrays match)."
-        )
-
-
 def _load_npy_or_raise(path: str, label: str) -> np.ndarray:
     if path is None:
         raise RuntimeError(f"{label} path is None")
     if not os.path.isfile(path):
         raise FileNotFoundError(f"Design field file not found ({label}): {path}")
     return np.load(path)
-
 
 def _assign_cg1_field(func: fem.Function, arr: np.ndarray, name: str):
     """
@@ -250,10 +239,6 @@ def _compute_marker_avg_displacement(u_field: fem.Function, marker_func):
     u_mag_avg = float(np.sqrt(ux_avg**2 + uy_avg**2))
 
     return ux_avg, uy_avg, u_mag_avg
-
-# ============================================================
-# Public API
-# ============================================================
 
 def evaluate(fem_params: dict,
              eval_config: dict,

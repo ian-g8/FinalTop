@@ -1,3 +1,28 @@
+"""
+Original FEniTop authors:
+- Yingqi Jia (yingqij2@illinois.edu)
+- Chao Wang (chaow4@illinois.edu)
+- Xiaojia Shelly Zhang (zhangxs@illinois.edu)
+
+Reference:
+- Jia, Y., Wang, C. & Zhang, X.S. FEniTop: a simple FEniCSx implementation
+  for 2D and 3D topology optimization supporting parallel computing.
+  Struct Multidisc Optim 67, 140 (2024).
+  https://doi.org/10.1007/s00158-024-03818-7
+
+Major modifications:
+- Ian Galloway (ian.galloway@mines.sdsmt.edu)
+- Prashant Jha (prashant.jha@sdsmt.edu)
+
+Major additions to fem.py:
+- Hyperelastic material models
+- Magneto-mechanical coupling through remanent and applied magnetic fields
+- Magnetic material fraction design variable (phi)
+- Remanence-direction design variable (theta)
+- Multi-load-case magnetic and traction loading support
+- Additional objective and constraint formulations
+"""
+
 import os
 import numpy as np
 import time
@@ -230,14 +255,6 @@ def form_fem(fem_params, opt):
     # Expose handle so topopt.py can update per load case
     opt["B_app"] = B_app
 
-    # Boundary conditions
-    
-    #dim = mesh.topology.dim
-    #fdim = dim - 1
-    #disp_facets = locate_entities_boundary(mesh, fdim, fem_params["disp_bc"])
-    #bc = dirichletbc(Constant(mesh, np.full(dim, 0.0)),
-    #                 locate_dofs_topological(V, fdim, disp_facets), V)
-
     # ============================================================
     # Boundary / Interior Displacement BC
     # ============================================================
@@ -257,8 +274,6 @@ def form_fem(fem_params, opt):
         disp_dofs = locate_dofs_topological(V, fdim, disp_facets)
 
     bc = dirichletbc(Constant(mesh, np.full(dim, 0.0)), disp_dofs, V)
-
-
 
     # Tractions
     facets, markers, traction_constants, tractions = [], [], [], [] 
@@ -401,10 +416,6 @@ def form_fem(fem_params, opt):
         J = inner(u_field, b) * dx
         for marker, t in enumerate(traction_constants):
             J += inner(u_field, t) * ds(marker)
-        
-    elif obj_type == "min_elastic_energy":
-        # Minimize elastic strain energy
-        J = W_elastic * dx
 
     elif obj_type == "max_disp":
         # Maximize boundary displacement magnitude
@@ -416,26 +427,6 @@ def form_fem(fem_params, opt):
         target_marker = 0
         u_norm = ufl.sqrt(u_field[0]**2 + u_field[1]**2)
         J = - u_norm * ds(target_marker)
-
-    elif obj_type == "min_disp_norm":
-        # Minimize displacement magnitude over the domain.
-        # Normalized so MMA objective gradients do not swamp volume constraints.
-        disp_ref = float(opt.get("disp_norm_ref", 1.0))
-        if disp_ref <= 0.0:
-            raise RuntimeError("opt['disp_norm_ref'] must be positive.")
-        J = (1.0 / disp_ref) * ufl.inner(u_field, u_field) * dx
-        
-
-    elif obj_type == "min_boundary_disp_norm":
-        # Minimize squared displacement magnitude on the loaded/output boundary.
-        # This avoids signed compliance gaming but keeps the objective focused
-        # where the mechanical traction is applied.
-        target_marker = int(opt.get("boundary_disp_marker", 0))
-        disp_ref = float(opt.get("boundary_disp_ref", 1.0))
-        if disp_ref <= 0.0:
-            raise RuntimeError("opt['boundary_disp_ref'] must be positive.")
-        J = (1.0 / disp_ref) * ufl.inner(u_field, u_field) * ds(target_marker)
-
         
     elif obj_type == "boundary_disp":
         # Directional boundary displacement objective (actuator/gripper style)
@@ -563,86 +554,6 @@ def form_fem(fem_params, opt):
         ))
 
         J = -w_obj * w_band * ufl.inner(u_field, t_vec) * dx
-        
-    elif obj_type == "rotational_disp_band_energy":
-        # Maximize CCW rotational displacement
-        # while also rewarding elastic strain energy storage.
-
-        center = opt.get("rotation_center", None)
-        if center is None:
-            raise RuntimeError(
-                "objective_type='rotational_disp_band_energy' requires opt['rotation_center']."
-            )
-
-        xc = float(center[0])
-        yc = float(center[1])
-
-        R_obj = float(opt.get("rotation_radius", 1.0))
-        sigma = float(opt.get("rotation_band_sigma", 0.10))
-        rotation_sign = float(opt.get("rotation_sign", 1.0))
-        w_obj = float(opt.get("rotation_weight", 1.0))
-
-        alpha_energy = float(
-            opt.get("rotation_energy_weight", 0.01)
-        )
-
-        X = ufl.SpatialCoordinate(mesh)
-
-        rx = X[0] - xc
-        ry = X[1] - yc
-
-        r = ufl.sqrt(rx**2 + ry**2 + 1.0e-12)
-
-        w_band = ufl.exp(-((r - R_obj) / sigma)**2)
-
-        t_vec = rotation_sign * ufl.as_vector((
-            -ry / r,
-             rx / r
-        ))
-
-        J_rot = -w_obj * w_band * ufl.inner(u_field, t_vec)
-
-        J = (J_rot - alpha_energy * W_elastic) * dx
-        
-    elif obj_type == "max_disp_plus_comp":
-        # Max displacement + compliance regularization
-        target_marker = 0
-
-        # Tip displacement term
-        J_tip = - ufl.inner(u_field, ufl.as_vector((0.0, 1.0))) * ds(target_marker)
-
-        # Compliance term
-        C_form = inner(u_field, b) * dx
-        for marker, t in enumerate(traction_constants):
-            C_form += inner(u_field, t) * ds(marker)
-
-        alpha = float(opt.get("disp_comp_alpha", 0.01))
-        
-        C_ref = float(opt.get("compliance_ref", 1.0))
-        if C_ref <= 0:
-            raise RuntimeError("compliance_ref must be > 0")
-
-        # Scale compliance term explicitly (Forms cannot be divided)
-        comp_weight = alpha / C_ref
-
-        J = J_tip + comp_weight * C_form
-
-    elif obj_type == "max_disp_we_voidpen":
-        # Maximize vertical displacement on right boundary
-        # PLUS WE-weighted void penalty (frozen weights)
-        target_marker = 0
-        J_tip = - ufl.inner(u_field, ufl.as_vector((0.0, 1.0))) * ds(target_marker)
-
-        alpha = float(opt.get("we_voidpen_alpha", 0.01))
-
-        # penalty form (rho-only), w_void treated as constant during differentiation
-        P_void = opt["we_voidpen_weight_field"] * (1.0 - rho_phys_field)**2 * dx
-
-        # store for diagnostics (optional)
-        opt["we_voidpen_form"] = P_void
-
-        # normalized penalty contribution
-        J = J_tip + alpha * (1.0 / opt["we_voidpen_P0_const"]) * P_void
  
     elif obj_type == "disp_track":
         # --------------------------------------------------------
@@ -772,7 +683,7 @@ def form_fem(fem_params, opt):
     opt["dC_dphi_form"] = ufl.derivative(C_form, phi_phys_field)
     opt["dC_dtheta_form"] = ufl.derivative(C_form, theta_phys_field)
 
-    # Stress constraint (Zhao 2022 p-norm von-Mises constraint)
+    # Stress constraint 
     # ---- material parameters ----
     pnorm = opt.get("stress_pnorm", 12)
     sigma_max = opt.get("sigma_max", 1e6)  # override in input script

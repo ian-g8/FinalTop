@@ -1,3 +1,27 @@
+"""
+Original FEniTop authors:
+- Yingqi Jia (yingqij2@illinois.edu)
+- Chao Wang (chaow4@illinois.edu)
+- Xiaojia Shelly Zhang (zhangxs@illinois.edu)
+
+Reference:
+- Jia, Y., Wang, C. & Zhang, X.S. FEniTop: a simple FEniCSx implementation
+  for 2D and 3D topology optimization supporting parallel computing.
+  Struct Multidisc Optim 67, 140 (2024).
+  https://doi.org/10.1007/s00158-024-03818-7
+
+Major modifications:
+- Ian Galloway (ian.galloway@mines.sdsmt.edu)
+- Prashant Jha (prashant.jha@sdsmt.edu)
+
+Major additions to topopt.py:
+- Simultaneous optimization of rho, phi, and theta
+- Active design-variable selection and management
+- Multi-load-case optimization support
+- Additional optimization constraints
+- Design export and post-processing utilities
+"""
+
 import os
 import numpy as np
 import time
@@ -84,17 +108,6 @@ def topopt(fem_params, opt, design_variables=None):
         traction_constants,
         ds,
     ) = form_fem(fem_params, opt)
-   
-    # Compliance diagnostic (used for logging and optional constraints)
-    # NOTE: no body force added
-    if len(traction_constants) > 0:
-        compliance_form = 0
-        for marker, t in enumerate(traction_constants):
-            compliance_form += inner(u_field, t) * ds(marker)
-    else:
-        compliance_form = None
-
-
 
     # --- Von Mises stress field for output ---
     S0_stress = fem.functionspace(fem_params["mesh"], ("DG", 0))
@@ -113,7 +126,6 @@ def topopt(fem_params, opt, design_variables=None):
             opt["W_elastic_expr"],
             S0_W.element.interpolation_points()
         )
-
 
     # CG1 space for BP output (BP requires matching element types)
     S_stress_cg = fem.functionspace(fem_params["mesh"], ("CG", 1))
@@ -206,24 +218,6 @@ def topopt(fem_params, opt, design_variables=None):
                             rho_phys_field, phi_phys_field,
                             opt["theta_phys_field"])
 
-    
-    # ============================================================
-    # WE-weighted void penalty objective (frozen weights)
-    # ============================================================
-    we_voidpen_obj = (opt.get("objective_type", "") == "max_disp_we_voidpen")
-    if we_voidpen_obj:
-        # weight field and P0 constant were created in fem.py and stored in opt
-        we_w_field = opt["we_voidpen_weight_field"]      # DG0 Function
-        we_P0_const = opt["we_voidpen_P0_const"]         # Constant
-
-        we_freeze_iter = int(opt.get("we_weight_freeze_iter", 1))
-        we_update_every = int(opt.get("we_weight_update_every", 25))
-        we_wmax = float(opt.get("we_weight_wmax", 1.0))
-
-        # internal flags
-        we_weights_initialized = False
-
-
     S_comm = Communicator(phi_phys_field.function_space, fem_params["mesh_serial"])
     
     # MMA initialization
@@ -249,7 +243,6 @@ def topopt(fem_params, opt, design_variables=None):
             num_consts += 1
         if phi_active:
             num_consts += 1
-
 
     # Load cases (always a list after normalization below)
     load_cases = fem_params.get("load_cases", None)
@@ -764,12 +757,6 @@ def topopt(fem_params, opt, design_variables=None):
                         f"target=({ux_t:.4f}, {uy_t:.4f}), "
                         f"error=({err_x:.4f}, {err_y:.4f})"
                     )
-    
-
-                # NOTE:
-            # We intentionally do NOT use sens_output[1] anymore.
-            # All design-variable gradients are accessed through the dict interface
-            # to support arbitrary active variables (rho / phi / theta / future).
 
             sens_output = sens_problem.evaluate()
 
@@ -777,7 +764,7 @@ def topopt(fem_params, opt, design_variables=None):
             [Obj_case, V_rho_case, V_phi_case] = sens_output[0]
             constraints = sens_output[2]
 
-            # --- Dict-based sensitivities (NEW canonical interface) ---
+            # --- Dict-based sensitivities ---
             grads = sens_output[3]
 
             dJdrho_phys = grads["objective"]["rho"]
